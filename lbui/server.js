@@ -6,18 +6,126 @@
 const http = require("node:http");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
+const net = require("node:net");
 const path = require("node:path");
 const { spawn, execFile } = require("node:child_process");
 
 const ROOT = process.env.LBUI_ROOT || path.resolve(__dirname, "..");
 const SELF = path.basename(__dirname); // "lbui" — hidden from list, banned as a name
 const CONFIG_PATH = path.join(__dirname, "config.json");
+const PID_PATH = path.join(__dirname, ".lbui.pid");
 const UI_PORT = Number(process.argv.includes("--port")
   ? process.argv[process.argv.indexOf("--port") + 1]
   : process.env.LBUI_PORT || 4400);
+const FOREGROUND = process.argv.includes("--foreground") || process.env.LBUI_DAEMON === "1";
+const NO_OPEN = process.argv.includes("--no-open");
+const WANT_STOP = process.argv.includes("stop") || process.argv.includes("--stop");
 
 const MAX_LOG_LINES = 800;
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+function uiUrl() {
+  return `http://localhost:${UI_PORT}`;
+}
+
+function readPid() {
+  try {
+    const pid = Number(fs.readFileSync(PID_PATH, "utf8").trim());
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function isAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function portOpen(port) {
+  return new Promise((resolve) => {
+    const sock = net.connect({ host: "127.0.0.1", port }, () => {
+      sock.destroy();
+      resolve(true);
+    });
+    sock.on("error", () => resolve(false));
+  });
+}
+
+async function waitForPort(port, ms = 5000) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (await portOpen(port)) return true;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return false;
+}
+
+function stopLbui() {
+  const pid = readPid();
+  if (!pid || !isAlive(pid)) {
+    try { fs.unlinkSync(PID_PATH); } catch {}
+    if (!pid) {
+      console.log("lbui is not running.");
+      process.exit(0);
+    }
+    console.log(`lbui is not running (stale pid ${pid}).`);
+    process.exit(0);
+  }
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (err) {
+    console.error(`failed to stop lbui (pid ${pid}): ${err.message}`);
+    process.exit(1);
+  }
+  console.log(`stopped lbui (pid ${pid})`);
+  try { fs.unlinkSync(PID_PATH); } catch {}
+  process.exit(0);
+}
+
+async function detachAndExit() {
+  if (await portOpen(UI_PORT)) {
+    const pid = readPid();
+    console.log(`lbui already running${pid ? ` (pid ${pid})` : ""}`);
+    console.log(`→ ${uiUrl()}`);
+    if (!NO_OPEN) execFile("open", [uiUrl()], () => process.exit(0));
+    else process.exit(0);
+    return;
+  }
+
+  const childArgs = process.argv.slice(1).filter((a) => a !== "stop" && a !== "--stop");
+  if (!childArgs.includes("--foreground")) childArgs.push("--foreground");
+  if (!childArgs.includes("--no-open")) childArgs.push("--no-open");
+
+  const child = spawn(process.execPath, childArgs, {
+    detached: true,
+    stdio: "ignore",
+    env: { ...process.env, LBUI_DAEMON: "1" },
+  });
+  child.unref();
+
+  const up = await waitForPort(UI_PORT);
+  if (!up) {
+    console.error("lbui failed to start.");
+    process.exit(1);
+  }
+
+  console.log(`lbui — managing ${ROOT}`);
+  console.log(`→ ${uiUrl()}`);
+  if (!NO_OPEN) execFile("open", [uiUrl()], () => process.exit(0));
+  else process.exit(0);
+}
+
+if (WANT_STOP) stopLbui();
+if (!FOREGROUND) {
+  detachAndExit();
+  // keep the event loop alive until detachAndExit exits
+  return;
+}
 
 // ---------------------------------------------------------------------------
 // State
@@ -60,22 +168,113 @@ function refreshAuth() {
   });
 }
 
+function deployMetaPath(dir) {
+  return path.join(dir, ".lakebed", "deploy.json");
+}
+
+async function readDeployMeta(dir) {
+  try {
+    const d = JSON.parse(await fsp.readFile(deployMetaPath(dir), "utf8"));
+    return {
+      url: d.url || null,
+      deployId: d.deployId || null,
+      domains: Array.isArray(d.domains) ? d.domains : [],
+      raw: d,
+      source: "deploy.json",
+    };
+  } catch {
+    try {
+      const d = JSON.parse(await fsp.readFile(path.join(dir, "lakebed.json"), "utf8"));
+      return {
+        url: d.url || null,
+        deployId: d.deployId || null,
+        domains: Array.isArray(d.domains) ? d.domains : [],
+        raw: d,
+        source: "lakebed.json",
+      };
+    } catch {
+      return null;
+    }
+  }
+}
+
+function publicDeploy(meta) {
+  if (!meta) return null;
+  const domains = meta.domains || [];
+  const customUrl = domains.find((d) => d && d.url)?.url || null;
+  return {
+    url: customUrl || meta.url || null,
+    defaultUrl: meta.url || null,
+    deployId: meta.deployId || null,
+    domains,
+  };
+}
+
+async function writeDeployDomains(dir, domains) {
+  const file = deployMetaPath(dir);
+  let existing = {};
+  try {
+    existing = JSON.parse(await fsp.readFile(file, "utf8"));
+  } catch {
+    try {
+      const binding = JSON.parse(await fsp.readFile(path.join(dir, "lakebed.json"), "utf8"));
+      existing = { deployId: binding.deployId || null };
+    } catch {
+      return;
+    }
+  }
+  const next = {
+    ...existing,
+    domains,
+    updatedAt: new Date().toISOString(),
+  };
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await fsp.writeFile(file, `${JSON.stringify(next, null, 2)}\n`);
+}
+
+// name -> last sync attempt ms
+const domainSyncAt = new Map();
+const DOMAIN_SYNC_TTL_MS = 60_000;
+
+function scheduleDomainSync(name, dir, meta) {
+  if (!meta?.deployId) return;
+  // Skip if we already have domains cached locally.
+  if (Array.isArray(meta.domains) && meta.domains.length > 0) return;
+  const last = domainSyncAt.get(name) || 0;
+  if (Date.now() - last < DOMAIN_SYNC_TTL_MS) return;
+  domainSyncAt.set(name, Date.now());
+  execFile(
+    "npx",
+    ["lakebed", "inspect", meta.deployId, "--json"],
+    { cwd: dir, timeout: 30000, maxBuffer: 2 * 1024 * 1024 },
+    (err, stdout) => {
+      if (err) return;
+      try {
+        const manifest = JSON.parse(stdout);
+        const domains = Array.isArray(manifest.domains)
+          ? manifest.domains.map((d) => ({
+              hostname: d.hostname,
+              url: d.url || (d.hostname ? `https://${d.hostname}` : null),
+              primary: !!d.primary,
+              status: d.status || null,
+            })).filter((d) => d.hostname && d.url)
+          : [];
+        if (!domains.length) return;
+        writeDeployDomains(dir, domains).catch(() => {});
+      } catch {}
+    },
+  );
+}
+
 async function listProjects() {
   const entries = await fsp.readdir(ROOT, { withFileTypes: true });
   const projects = [];
   for (const e of entries) {
     if (!e.isDirectory() || e.name.startsWith(".") || e.name === SELF) continue;
     const dir = path.join(ROOT, e.name);
-    let deploy = null;
-    try {
-      const d = JSON.parse(await fsp.readFile(path.join(dir, ".lakebed", "deploy.json"), "utf8"));
-      deploy = { url: d.url || null, deployId: d.deployId || null };
-    } catch {
-      try {
-        const d = JSON.parse(await fsp.readFile(path.join(dir, "lakebed.json"), "utf8"));
-        deploy = { url: d.url || null, deployId: d.deployId || null };
-      } catch {}
-    }
+    const meta = await readDeployMeta(dir);
+    if (meta) scheduleDomainSync(e.name, dir, meta);
+    const deploy = publicDeploy(meta);
     let mtime = 0;
     try { mtime = (await fsp.stat(dir)).mtimeMs; } catch {}
     const dev = devs.get(e.name);
@@ -127,6 +326,25 @@ function runJob(name, kind, args, cwd) {
     job.done = true;
     job.ok = code === 0;
     pushLine(job.lines, code === 0 ? "✓ done" : `✗ exited with code ${code}`);
+    if (code === 0 && kind === "domain") {
+      const hostname = args.find((a) => typeof a === "string" && a.endsWith(".lakebed.app"));
+      if (hostname) {
+        readDeployMeta(cwd).then((meta) => {
+          const domains = [...(meta?.domains || [])];
+          if (!domains.some((d) => d.hostname === hostname)) {
+            domains.push({
+              hostname,
+              url: `https://${hostname}`,
+              primary: false,
+              status: "active",
+            });
+          }
+          return writeDeployDomains(cwd, domains);
+        }).catch(() => {});
+      }
+      // Force a fresh inspect sync next list tick.
+      domainSyncAt.delete(name);
+    }
   });
   proc.on("error", (err) => {
     job.done = true;
@@ -260,9 +478,22 @@ const handlers = {
   },
 
   async "POST /api/open"(req) {
-    const { name } = req.body;
+    const { name, app = "cursor" } = req.body;
     const dir = projectDir(name);
     if (!fs.existsSync(dir)) throw httpError(404, "No such project.");
+    if (app === "terminal") {
+      const bin = process.env.CMUX_BIN
+        || [
+          "/usr/local/bin/cmux",
+          "/opt/homebrew/bin/cmux",
+          "/Applications/cmux.app/Contents/Resources/bin/cmux",
+        ].find((p) => fs.existsSync(p))
+        || "cmux";
+      // `cmux <path>` opens the directory in a new workspace tab (launches cmux if needed).
+      spawn(bin, [dir], { detached: true, stdio: "ignore" }).unref();
+      return { ok: true };
+    }
+    if (app !== "cursor") throw httpError(400, `Unknown app: ${app}`);
     // Prefer the Cursor CLI; fall back to opening the .app by name.
     const bin = process.env.CURSOR_BIN
       || ["/usr/local/bin/cursor", "/opt/homebrew/bin/cursor"].find((p) => fs.existsSync(p))
@@ -318,15 +549,17 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(UI_PORT, "127.0.0.1", () => {
-  const url = `http://localhost:${UI_PORT}`;
+  try { fs.writeFileSync(PID_PATH, String(process.pid)); } catch {}
+  const url = uiUrl();
   console.log(`lbui — managing ${ROOT}`);
   console.log(`→ ${url}`);
   refreshAuth();
   setInterval(refreshAuth, 5 * 60 * 1000);
-  if (!process.argv.includes("--no-open")) execFile("open", [url], () => {});
+  if (!NO_OPEN) execFile("open", [url], () => {});
 });
 
 function shutdown() {
+  try { fs.unlinkSync(PID_PATH); } catch {}
   for (const [, dev] of devs) {
     try { process.kill(-dev.proc.pid, "SIGTERM"); } catch { try { dev.proc.kill("SIGTERM"); } catch {} }
   }
