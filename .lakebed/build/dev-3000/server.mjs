@@ -1,0 +1,16 @@
+// ../../.npm/_npx/3eb8d3eaaf4ef1b4/node_modules/lakebed/dist/server.js
+function capsule(definition) {
+  return definition;
+}
+
+// lakebed-source:server/index.ts
+var server_default = capsule({
+  name: "video-morpher",
+  schema: {},
+  queries: {},
+  mutations: {}
+});
+export {
+  server_default as default
+};
+//# sourceMappingURL=data:application/json;base64,ewogICJ2ZXJzaW9uIjogMywKICAic291cmNlcyI6IFsiLi4vLi4vLi4vLi4vLi4vLm5wbS9fbnB4LzNlYjhkM2VhYWY0ZWYxYjQvbm9kZV9tb2R1bGVzL2xha2ViZWQvc3JjL3NlcnZlci50cyIsICJsYWtlYmVkLXNvdXJjZTpzZXJ2ZXIvaW5kZXgudHMiXSwKICAic291cmNlc0NvbnRlbnQiOiBbbnVsbCwgImltcG9ydCB7IGNhcHN1bGUgfSBmcm9tIFwibGFrZWJlZC9zZXJ2ZXJcIjtcblxuZXhwb3J0IGRlZmF1bHQgY2Fwc3VsZSh7XG4gIG5hbWU6IFwidmlkZW8tbW9ycGhlclwiLFxuICBzY2hlbWE6IHt9LFxuICBxdWVyaWVzOiB7fSxcbiAgbXV0YXRpb25zOiB7fSxcbn0pO1xuIl0sCiAgIm1hcHBpbmdzIjogIjtBQTRGTSxTQUFVLFFBQVcsWUFBYTtBQUN0QyxTQUFPO0FBQ1Q7OztBQzVGQSxJQUFPLGlCQUFRLFFBQVE7QUFBQSxFQUNyQixNQUFNO0FBQUEsRUFDTixRQUFRLENBQUM7QUFBQSxFQUNULFNBQVMsQ0FBQztBQUFBLEVBQ1YsV0FBVyxDQUFDO0FBQ2QsQ0FBQzsiLAogICJuYW1lcyI6IFtdCn0K

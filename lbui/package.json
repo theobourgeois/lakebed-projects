@@ -1,0 +1,7 @@
+{
+  "name": "lbui",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local web UI for managing lakebed capsules",
+  "bin": { "lbui": "./server.js" }
+}
