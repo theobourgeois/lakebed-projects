@@ -15,7 +15,12 @@ import {
     type SceneLayer,
     type SceneMeta,
 } from "../shared/types";
-import { loadSettings, saveSettings, type AppSettings } from "./appSettings";
+import {
+    loadSettings,
+    previewQualityCap,
+    saveSettings,
+    type AppSettings,
+} from "./appSettings";
 import { LayerPanel } from "./components/LayerPanel";
 import { LayersSidebar } from "./components/LayersSidebar";
 import { HelpModal } from "./components/HelpModal";
@@ -40,7 +45,12 @@ import { usePlayMode } from "./hooks/usePlayMode";
 import { useRecorder } from "./hooks/useRecorder";
 import { useSceneHistory } from "./hooks/useSceneHistory";
 import { useToast } from "./hooks/useToast";
-import { mutateGlobalFx, randomGlobalFx, randomLayerFx } from "./presets";
+import {
+    mutateGlobalFx,
+    randomGlobalFx,
+    randomLayerFx,
+    resetLayerFxEffects,
+} from "./presets";
 import { loadAutosave, newId, saveAutosave } from "./store";
 import { GLOBAL_CSS } from "./theme";
 
@@ -104,7 +114,7 @@ export function App() {
         fxY: number;
     } | null>(null);
     const stageSizeRef = useRef<StageSize>({ width: 1, height: 1 });
-    const qualityRef = useRef(1.5);
+    const qualityRef = useRef(previewQualityCap(settings.previewQuality));
     const dragRafRef = useRef(0);
     const dragPointRef = useRef({ x: 0, y: 0 });
     const helpOpenRef = useRef(false);
@@ -316,6 +326,20 @@ export function App() {
         engineRef.current?.clearFeedback();
     }
 
+    /** Full defaults for world FX and every layer's effects (keeps layout). */
+    function resetAllSettings() {
+        setScene((previous) => ({
+            ...previous,
+            global: { ...DEFAULT_GLOBAL_FX },
+            layers: previous.layers.map((layer) => ({
+                ...layer,
+                fx: resetLayerFxEffects(layer.fx),
+            })),
+        }));
+        engineRef.current?.clearFeedback();
+        showToast("Reset all settings");
+    }
+
     function updateSettings(patch: Partial<AppSettings>) {
         setSettings((previous) => {
             const next = { ...previous, ...patch };
@@ -327,7 +351,7 @@ export function App() {
     /* ------------------------------- engine loop ------------------------------ */
 
     function buildFrame(): FrameState {
-        return buildFrameState({
+        const frame = buildFrameState({
             scene: sceneRef.current,
             info: media.imageInfoRef.current,
             stageSize: stageSizeRef.current,
@@ -336,6 +360,8 @@ export function App() {
             pointer: pointerRef.current,
             kick: playMode.kickRef.current,
         });
+        if (settingsRef.current.flashSafeMode) frame.global.strobe = 0;
+        return frame;
     }
 
     useEffect(() => {
@@ -355,6 +381,7 @@ export function App() {
             return;
         }
         engineRef.current = engine;
+        engine.setPixelRatioCap(qualityRef.current);
 
         const resize = () => {
             const rect = stage.getBoundingClientRect();
@@ -423,7 +450,10 @@ export function App() {
 
             // Adaptive quality: drop internal resolution when frames run slow,
             // creep back up when there is headroom. Skip while export-locked.
-            if (!recorder.exportLockRef.current) {
+            if (
+                !recorder.exportLockRef.current &&
+                settingsRef.current.previewQuality === "auto"
+            ) {
                 if (dt > 0.024) {
                     slowStreak++;
                     fastStreak = 0;
@@ -473,6 +503,13 @@ export function App() {
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    useEffect(() => {
+        const cap = previewQualityCap(settings.previewQuality);
+        qualityRef.current = cap;
+        if (!recorder.exportLockRef.current)
+            engineRef.current?.setPixelRatioCap(cap);
+    }, [settings.previewQuality]);
 
     // Autosave (debounced)
     useEffect(() => {
@@ -562,6 +599,16 @@ export function App() {
             if (event.key === " ") {
                 event.preventDefault();
                 setFrozen((previous) => !previous);
+                return;
+            }
+            if (event.key === "Enter") {
+                event.preventDefault();
+                void recorder.toggleRecording();
+                return;
+            }
+            if (event.key === "Backspace" && event.shiftKey) {
+                event.preventDefault();
+                if (!event.repeat) resetAllSettings();
                 return;
             }
 
@@ -989,8 +1036,14 @@ export function App() {
                     recording={recorder.recording}
                     recordMicAudio={settings.recordMicAudio}
                     onToggleRecording={() => void recorder.toggleRecording()}
-                    exportRes={recorder.exportRes}
-                    onExportRes={recorder.setExportRes}
+                    exportFormat={settings.exportFormat}
+                    exportQuality={settings.exportQuality}
+                    onExportFormat={(exportFormat) =>
+                        updateSettings({ exportFormat })
+                    }
+                    onExportQuality={(exportQuality) =>
+                        updateSettings({ exportQuality })
+                    }
                     onExportPng={recorder.exportPng}
                     settingsOpen={settingsOpen}
                     onToggleSettings={() => {
@@ -1057,7 +1110,10 @@ export function App() {
                             void media.importFiles(event.dataTransfer.files);
                     }}
                 >
-                    <canvas ref={canvasRef} class="block h-full w-full" />
+                    <canvas
+                        ref={canvasRef}
+                        class="block h-full w-full object-contain"
+                    />
                     {selectionBox && (
                         <div
                             class="pointer-events-none absolute border border-[var(--acid)]/70"
@@ -1087,14 +1143,14 @@ export function App() {
                         </div>
                     )}
 
-                    {recorder.recording && (
+                    {settings.showPreviewHud && recorder.recording && (
                         <div class="pointer-events-none absolute left-3 top-3 flex items-center gap-2 border border-[#c45b6a]/50 bg-black/60 px-2.5 py-1 font-mono text-[9px] uppercase tracking-widest text-[#b86a74]">
                             <span class="rec-dot inline-block h-2 w-2 rounded-full bg-[#c45b6a]" />{" "}
                             Rec
                             {recorder.recordingWithMic ? " · mic" : ""}
                         </div>
                     )}
-                    {uiHidden && (
+                    {settings.showPreviewHud && uiHidden && (
                         <button
                             type="button"
                             class="absolute bottom-3 right-3 border border-[var(--line)] bg-black/60 px-2.5 py-1.5 font-mono text-[9px] uppercase tracking-widest text-[var(--mute)] hover:text-[var(--paper)]"
@@ -1144,7 +1200,7 @@ export function App() {
                 />
             )}
 
-            {toast && (
+            {settings.showPreviewHud && toast && (
                 <div class="pop pointer-events-none fixed bottom-5 left-1/2 z-50 -translate-x-1/2 border border-[var(--line)] bg-[var(--panel-2)] px-4 py-2 font-mono text-[10.5px] text-[var(--paper)] shadow-2xl">
                     {toast}
                 </div>

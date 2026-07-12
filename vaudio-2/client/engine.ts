@@ -234,20 +234,80 @@ vec4 tap(vec2 uv) {
   return s;
 }
 
+vec3 blendClipLum(vec3 c) {
+  float l = luma(c);
+  float n = min(c.r, min(c.g, c.b));
+  float x = max(c.r, max(c.g, c.b));
+  if (n < 0.0) c = l + (c - l) * l / (l - n + 1e-5);
+  if (x > 1.0) c = l + (c - l) * (1.0 - l) / (x - l + 1e-5);
+  return c;
+}
+vec3 blendSetLum(vec3 c, float l) {
+  return blendClipLum(c + (l - luma(c)));
+}
+vec3 blendSetSat(vec3 c, float sat) {
+  float mn = min(c.r, min(c.g, c.b));
+  float mx = max(c.r, max(c.g, c.b));
+  float d = mx - mn;
+  if (d < 1e-5) return vec3(0.0);
+  return (c - mn) * sat / d;
+}
+float blendSat(vec3 c) {
+  return max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
+}
+vec3 blendSoftLight(vec3 d, vec3 s) {
+  // W3C soft-light
+  vec3 lo = d - (1.0 - 2.0 * s) * d * (1.0 - d);
+  vec3 hi = d + (2.0 * s - 1.0) * (sqrt(max(d, vec3(0.0))) - d);
+  return mix(lo, hi, step(0.5, s));
+}
+vec3 blendColorDodge(vec3 d, vec3 s) {
+  return mix(min(vec3(1.0), d / max(1.0 - s, vec3(1e-4))), vec3(1.0), step(0.999, s));
+}
+vec3 blendColorBurn(vec3 d, vec3 s) {
+  return mix(1.0 - min(vec3(1.0), (1.0 - d) / max(s, vec3(1e-4))), vec3(0.0), step(s, vec3(0.001)));
+}
+vec3 blendVividLight(vec3 d, vec3 s) {
+  return mix(blendColorBurn(d, max(2.0 * s, vec3(1e-4))), blendColorDodge(d, min(2.0 * (s - 0.5), vec3(1.0))), step(0.5, s));
+}
 vec3 blendPix(vec3 d, vec3 s) {
   float m = u_blend;
-  if (m < 0.5) return s;
-  if (m < 1.5) return d + s;
-  if (m < 2.5) return 1.0 - (1.0 - d) * (1.0 - s);
-  if (m < 3.5) return d * s;
-  if (m < 4.5) {
+  if (m < 0.5) return s; // normal
+  if (m < 1.5) return d + s; // add / linear dodge
+  if (m < 2.5) return 1.0 - (1.0 - d) * (1.0 - s); // screen
+  if (m < 3.5) return d * s; // multiply
+  if (m < 4.5) { // overlay
     vec3 lo = 2.0 * d * s;
     vec3 hi = 1.0 - 2.0 * (1.0 - d) * (1.0 - s);
     return mix(lo, hi, step(0.5, d));
   }
-  if (m < 5.5) return abs(d - s);
-  if (m < 6.5) return max(d, s);
-  return min(d, s);
+  if (m < 5.5) return abs(d - s); // difference
+  if (m < 6.5) return max(d, s); // lighten
+  if (m < 7.5) return min(d, s); // darken
+  if (m < 8.5) return blendSoftLight(d, s); // soft-light
+  if (m < 9.5) { // hard-light
+    vec3 lo = 2.0 * d * s;
+    vec3 hi = 1.0 - 2.0 * (1.0 - d) * (1.0 - s);
+    return mix(lo, hi, step(0.5, s));
+  }
+  if (m < 10.5) return blendColorDodge(d, s); // color-dodge
+  if (m < 11.5) return blendColorBurn(d, s); // color-burn
+  if (m < 12.5) return d + s - 2.0 * d * s; // exclusion
+  if (m < 13.5) return d - s; // subtract
+  if (m < 14.5) return d / max(s, vec3(1e-4)); // divide
+  if (m < 15.5) return d + s - 1.0; // linear-burn
+  if (m < 16.5) return d + 2.0 * s - 1.0; // linear-light
+  if (m < 17.5) return blendVividLight(d, s); // vivid-light
+  if (m < 18.5) { // pin-light
+    vec3 lo = min(d, 2.0 * s);
+    vec3 hi = max(d, 2.0 * s - 1.0);
+    return mix(lo, hi, step(0.5, s));
+  }
+  if (m < 19.5) return step(1.0, d + s); // hard-mix
+  if (m < 20.5) return blendSetLum(blendSetSat(s, blendSat(d)), luma(d)); // hue
+  if (m < 21.5) return blendSetLum(blendSetSat(d, blendSat(s)), luma(d)); // saturation
+  if (m < 22.5) return blendSetLum(s, luma(d)); // color
+  return blendSetLum(d, luma(s)); // luminosity
 }
 
 void main() {

@@ -123,3 +123,12 @@ export const ISettings = (p: IconProps) =>
     );
 export const IChevronDown = (p: IconProps) => svg(p, <path d="m6 9 6 6 6-6" />);
 export const ICheck = (p: IconProps) => svg(p, <path d="m5 12.5 4.5 4.5L19 7" />);
+export const ICoffee = (p: IconProps) =>
+    svg(
+        p,
+        <>
+            <path d="M17 8h1.5a2.5 2.5 0 0 1 0 5H17" />
+            <path d="M3 8h14v7a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4Z" />
+            <path d="M6 2.5v2M9.5 2v3M13 2.5v2" />
+        </>,
+    );

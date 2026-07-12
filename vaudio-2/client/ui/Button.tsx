@@ -9,20 +9,23 @@ export function Button(props: {
     onClick: () => void;
     children: ComponentChildren;
     label?: string;
+    class?: string;
 }) {
+    const raised = props.active || props.danger;
     return (
         <button
             type="button"
             title={props.title}
             disabled={props.disabled}
             onClick={props.onClick}
+            data-group-active={raised ? "" : undefined}
             class={`flex h-[26px] items-center gap-1.5 border px-2 text-[10px] uppercase tracking-wide transition-colors disabled:opacity-30 ${
                 props.active
-                    ? "border-[var(--acid)] bg-[var(--acid)]/15 text-[var(--acid)]"
+                    ? "z-[1] border-[var(--acid)] bg-[var(--acid)]/15 text-[var(--acid)]"
                     : props.danger
-                      ? "border-[#c45b6a] bg-[#c45b6a]/10 text-[#b86a74]"
+                      ? "z-[1] border-[#c45b6a] bg-[#c45b6a]/10 text-[#b86a74]"
                       : "border-[var(--line)] bg-[var(--panel)] text-[var(--mute)] hover:border-[var(--line-hot)] hover:text-[var(--paper)]"
-            }`}
+            } ${props.class ?? ""}`}
         >
             {props.children}
             {props.label ? (

@@ -202,7 +202,20 @@ export function mutateGlobalFx(current: GlobalFx): GlobalFx {
   return next;
 }
 
-const CHAOS_BLENDS: BlendMode[] = ["normal", "add", "screen", "overlay", "difference", "lighten"];
+const CHAOS_BLENDS: BlendMode[] = [
+  "normal",
+  "add",
+  "screen",
+  "overlay",
+  "difference",
+  "lighten",
+  "soft-light",
+  "hard-light",
+  "color-dodge",
+  "exclusion",
+  "hue",
+  "luminosity",
+];
 
 const LAYER_DISTORT_POOL: EffectPick[] = [
   { key: "warp", weight: 3.0, min: 0.2, max: 0.8 },

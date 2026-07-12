@@ -35,6 +35,22 @@ export const BLEND_MODES = [
   "difference",
   "lighten",
   "darken",
+  "soft-light",
+  "hard-light",
+  "color-dodge",
+  "color-burn",
+  "exclusion",
+  "subtract",
+  "divide",
+  "linear-burn",
+  "linear-light",
+  "vivid-light",
+  "pin-light",
+  "hard-mix",
+  "hue",
+  "saturation",
+  "color",
+  "luminosity",
 ] as const;
 export type BlendMode = (typeof BLEND_MODES)[number];
 

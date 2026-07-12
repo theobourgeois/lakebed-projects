@@ -101,6 +101,7 @@ export function HelpModal(props: { onClose: () => void }) {
                 { cap: "-", label: "mutate", group: "sys" },
                 { cap: "=", label: "chaos", group: "sys" },
                 { cap: "⌫", u: 1.6, label: "wash", group: "sys" },
+                { cap: "⇧⌫", u: 1.5, label: "reset", group: "sys" },
             ],
         },
         {
@@ -127,7 +128,7 @@ export function HelpModal(props: { onClose: () => void }) {
                     group: "note" as const,
                     hue: noteHue(index),
                 })),
-                { cap: "⏎", u: 2.0, group: "none" },
+                { cap: "⏎", u: 2.0, label: "record", group: "sys" },
             ],
         },
         {
@@ -212,6 +213,7 @@ export function HelpModal(props: { onClose: () => void }) {
                         ["- / =", "mutate / chaos"],
                         ["arrows", "← → hue · ↑ ↓ saturation"],
                         ["backspace", "reset world FX"],
+                        ["⇧backspace", "reset all settings"],
                     ]}
                 />
                 <HelpList
@@ -220,6 +222,7 @@ export function HelpModal(props: { onClose: () => void }) {
                         ["esc", "arrange mode"],
                         ["P", "play mode (from arrange)"],
                         ["space", "freeze time"],
+                        ["enter", "start / stop recording"],
                         ["tab", "hide UI"],
                         ["⌘Z / ⇧⌘Z", "undo / redo"],
                         ["field", "cursor mode under Cursor settings"],

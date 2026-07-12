@@ -218,7 +218,7 @@ export function usePlayMode(deps: {
             addKick({ strobe: 0.18, chroma: 0.08, zoom: 0.06 });
             return;
         }
-        if (code === "Backspace") {
+        if (code === "Backspace" && !event.shiftKey) {
             event.preventDefault();
             if (event.repeat) return;
             washWorld();

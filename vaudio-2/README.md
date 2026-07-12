@@ -16,7 +16,7 @@ npx lakebed dev
 - **Layers** (left panel): drop, paste, or import anything. Images stay still;
   video loops as a live texture; audio becomes a reactive visual field; other
   files are painted from their bytes. Drag to move, wheel to scale,
-  shift+wheel to rotate. Each layer has 8 shader blend modes and a crop /
+  shift+wheel to rotate. Each layer has 24 shader blend modes and a crop /
   repeat / mirror canvas fill.
 - **Layer FX** (right panel, top): per-layer distortion, color and motion
   stacks, applied in a WebGL über-shader during compositing.

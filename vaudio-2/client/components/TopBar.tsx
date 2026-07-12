@@ -1,5 +1,10 @@
 import type { SceneMeta } from "../../shared/types";
-import { EXPORT_RESOLUTIONS, type ExportResolutionId } from "../exporting";
+import {
+    EXPORT_FORMATS,
+    EXPORT_QUALITIES,
+    type ExportFormatId,
+    type ExportQualityId,
+} from "../exporting";
 import {
     IDice,
     IDownload,
@@ -12,13 +17,9 @@ import {
     ISpark,
     IWand,
 } from "../icons";
-import { Button, Select } from "../ui";
+import { Button, ButtonGroup } from "../ui";
+import { RecordOptionsMenu } from "./RecordOptionsMenu";
 import { ScenesMenu } from "./ScenesMenu";
-
-const RESOLUTION_OPTIONS = EXPORT_RESOLUTIONS.map((item) => ({
-    value: item.id,
-    label: item.label,
-}));
 
 export type StageMode = "arrange" | "play";
 
@@ -44,8 +45,10 @@ export function TopBar(props: {
     recording: boolean;
     recordMicAudio: boolean;
     onToggleRecording: () => void;
-    exportRes: ExportResolutionId;
-    onExportRes: (id: ExportResolutionId) => void;
+    exportFormat: ExportFormatId;
+    exportQuality: ExportQualityId;
+    onExportFormat: (id: ExportFormatId) => void;
+    onExportQuality: (id: ExportQualityId) => void;
     onExportPng: () => void;
     settingsOpen: boolean;
     onToggleSettings: () => void;
@@ -137,38 +140,38 @@ export function TopBar(props: {
                 onDelete={props.onDeleteScene}
             />
             <span class="mx-1 h-4 w-px bg-[var(--line)]" />
-            <Button
-                title={
-                    props.recording
-                        ? "Stop recording"
-                        : props.recordMicAudio
-                          ? "Record canvas + mic"
-                          : "Record the canvas to video"
-                }
-                danger={props.recording}
-                onClick={props.onToggleRecording}
-            >
-                {props.recording ? (
-                    <span class="rec-dot inline-block h-2.5 w-2.5 rounded-full bg-[#c45b6a]" />
-                ) : (
-                    <span class="inline-block h-2.5 w-2.5 rounded-full border-[1.5px] border-current" />
-                )}
-            </Button>
-            <Select<ExportResolutionId>
-                title="Export / recording resolution (keeps stage aspect)"
-                value={props.exportRes}
-                options={RESOLUTION_OPTIONS}
-                disabled={props.recording}
-                onChange={props.onExportRes}
-                class="w-[78px]"
-                menuClass="right-0"
-            />
-            <Button
-                title={`Export PNG at ${EXPORT_RESOLUTIONS.find((item) => item.id === props.exportRes)?.label ?? "selected"} resolution`}
-                onClick={props.onExportPng}
-            >
-                <IDownload />
-            </Button>
+            <ButtonGroup>
+                <Button
+                    title={
+                        props.recording
+                            ? "Stop recording (Enter)"
+                            : props.recordMicAudio
+                              ? "Record canvas + mic (Enter)"
+                              : "Record the canvas to video (Enter)"
+                    }
+                    danger={props.recording}
+                    onClick={props.onToggleRecording}
+                >
+                    {props.recording ? (
+                        <span class="rec-dot inline-block h-2.5 w-2.5 rounded-full bg-[#c45b6a]" />
+                    ) : (
+                        <span class="inline-block h-2.5 w-2.5 rounded-full border-[1.5px] border-current" />
+                    )}
+                </Button>
+                <Button
+                    title={`Export PNG as ${EXPORT_QUALITIES.find((item) => item.id === props.exportQuality)?.label ?? "selected"} ${EXPORT_FORMATS.find((item) => item.id === props.exportFormat)?.label ?? "format"}`}
+                    onClick={props.onExportPng}
+                >
+                    <IDownload />
+                </Button>
+                <RecordOptionsMenu
+                    format={props.exportFormat}
+                    quality={props.exportQuality}
+                    disabled={props.recording}
+                    onFormat={props.onExportFormat}
+                    onQuality={props.onExportQuality}
+                />
+            </ButtonGroup>
             <Button
                 title="Settings"
                 active={props.settingsOpen}

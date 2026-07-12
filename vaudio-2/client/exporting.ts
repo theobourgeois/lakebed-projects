@@ -1,45 +1,67 @@
 import { cleanName } from "../shared/types";
 
-/** PNG-export / recording resolutions, all keeping the live stage aspect. */
-export const EXPORT_RESOLUTIONS = [
-    { id: "screen", label: "Screen", height: 0 },
-    { id: "720", label: "720p", height: 720 },
-    { id: "1080", label: "1080p", height: 1080 },
-    { id: "1440", label: "1440p", height: 1440 },
-    { id: "2160", label: "4K", height: 2160 },
+/** Output shapes, expressed at the medium (1080p-class) quality level. */
+export const EXPORT_FORMATS = [
+    {
+        id: "landscape",
+        label: "Landscape",
+        aspect: "16:9",
+        width: 1920,
+        height: 1080,
+    },
+    {
+        id: "vertical",
+        label: "Vertical",
+        aspect: "9:16",
+        width: 1080,
+        height: 1920,
+    },
+    {
+        id: "square",
+        label: "Square",
+        aspect: "1:1",
+        width: 1080,
+        height: 1080,
+    },
+    {
+        id: "portrait",
+        label: "Portrait",
+        aspect: "4:5",
+        width: 1080,
+        height: 1350,
+    },
+    {
+        id: "classic",
+        label: "Classic",
+        aspect: "4:3",
+        width: 1440,
+        height: 1080,
+    },
 ] as const;
 
-export type ExportResolutionId = (typeof EXPORT_RESOLUTIONS)[number]["id"];
+export const EXPORT_QUALITIES = [
+    { id: "low", label: "Low", detail: "720p", scale: 2 / 3 },
+    { id: "medium", label: "Medium", detail: "1080p", scale: 1 },
+    { id: "high", label: "High", detail: "4K", scale: 2 },
+] as const;
 
-const MAX_EXPORT_EDGE = 8192;
+export type ExportFormatId = (typeof EXPORT_FORMATS)[number]["id"];
+export type ExportQualityId = (typeof EXPORT_QUALITIES)[number]["id"];
 
 export function resolveExportSize(
-    resolutionId: ExportResolutionId,
-    stage: { width: number; height: number },
-    /** For "screen" PNG exports — multiply the live stage by this. */
-    screenScale = 1,
+    formatId: ExportFormatId,
+    qualityId: ExportQualityId,
 ): { width: number; height: number } {
-    const aspect = Math.max(0.05, stage.width / Math.max(1, stage.height));
-    let height: number;
-    let width: number;
-    if (resolutionId === "screen") {
-        height = Math.max(2, Math.round(stage.height * screenScale));
-        width = Math.max(2, Math.round(stage.width * screenScale));
-    } else {
-        const preset = EXPORT_RESOLUTIONS.find(
-            (item) => item.id === resolutionId,
-        );
-        height = preset?.height || 1080;
-        width = Math.max(2, Math.round(height * aspect));
-    }
-    const longest = Math.max(width, height);
-    if (longest > MAX_EXPORT_EDGE) {
-        const scale = MAX_EXPORT_EDGE / longest;
-        width = Math.max(2, Math.round(width * scale));
-        height = Math.max(2, Math.round(height * scale));
-    }
-    // Keep even dimensions — friendlier for video encoders.
-    return { width: width - (width % 2), height: height - (height % 2) };
+    const format =
+        EXPORT_FORMATS.find((item) => item.id === formatId) ??
+        EXPORT_FORMATS[0];
+    const quality =
+        EXPORT_QUALITIES.find((item) => item.id === qualityId) ??
+        EXPORT_QUALITIES[1];
+    return {
+        width: Math.round(format.width * quality.scale),
+        height: Math.round(format.height * quality.scale),
+    };
 }
 
 export function pickRecorderMime(includeAudio: boolean): string | undefined {

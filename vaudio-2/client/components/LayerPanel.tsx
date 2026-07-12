@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "preact/hooks";
 import {
     AUDIO_VISUAL_IDS,
     BLEND_MODES,
@@ -27,7 +28,7 @@ import {
 
 const BLEND_OPTIONS = BLEND_MODES.map((mode) => ({
     value: mode,
-    label: mode,
+    label: mode.replace(/-/g, " "),
 }));
 
 const VISUAL_OPTIONS = AUDIO_VISUAL_IDS.map((id) => ({
@@ -45,39 +46,18 @@ export function LayerPanel(props: {
 }) {
     const { layer, info } = props;
     const fx = layer.fx;
-    const audioDriven = layer.mediaKind === "mic" || layer.mediaKind === "audio";
+    const audioDriven =
+        layer.mediaKind === "mic" || layer.mediaKind === "audio";
+    const blendCommitRef = useRef(fx.blend);
+    const blendPreviewingRef = useRef(false);
+    useEffect(() => {
+        if (!blendPreviewingRef.current) {
+            blendCommitRef.current = fx.blend;
+        }
+    }, [fx.blend]);
     return (
         <>
-            <Section
-                title={`Layer · ${layer.name}`}
-                accent
-                actions={
-                    <>
-                        <IconButton
-                            title="Shuffle layer FX"
-                            tone="accent"
-                            onClick={() => props.onReplaceFx(randomLayerFx(fx))}
-                        >
-                            <IDice class="h-3.5 w-3.5" />
-                        </IconButton>
-                        <button
-                            type="button"
-                            title="Reset layer FX"
-                            class="font-mono text-[9px] uppercase text-[var(--mute)] hover:text-[var(--paper)]"
-                            onClick={() =>
-                                props.onReplaceFx(resetLayerFxEffects(fx))
-                            }
-                        >
-                            reset
-                        </button>
-                    </>
-                }
-            >
-                <div class="px-3 py-1 font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--mute)]">
-                    {mediaKindLabel(layer.mediaKind)}
-                    {info && !info.missing && ` · ${info.width}×${info.height}`}
-                    {info?.missing ? " · missing on device" : ""}
-                </div>
+            <Section accent actions={undefined}>
                 {audioDriven && (
                     <div class="px-3 py-[5px]">
                         <div class="mb-1 flex items-center text-[9px] uppercase tracking-[0.14em] text-[var(--mute)]">
@@ -108,7 +88,20 @@ export function LayerPanel(props: {
                     <Select<BlendMode>
                         value={fx.blend}
                         options={BLEND_OPTIONS}
-                        onChange={(blend) => props.onPatch({ blend })}
+                        onChange={(blend) => {
+                            blendCommitRef.current = blend;
+                            blendPreviewingRef.current = false;
+                            props.onPatch({ blend });
+                        }}
+                        onPreview={(blend) => {
+                            blendPreviewingRef.current = true;
+                            props.onPatch({ blend });
+                        }}
+                        onPreviewEnd={() => {
+                            const committed = blendCommitRef.current;
+                            blendPreviewingRef.current = false;
+                            props.onPatch({ blend: committed });
+                        }}
                     />
                 </div>
                 <Slider

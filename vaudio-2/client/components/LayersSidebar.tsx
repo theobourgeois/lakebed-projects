@@ -5,6 +5,7 @@ import type { ImageInfo } from "../frame";
 import {
     ICamera,
     IChevronDown,
+    ICoffee,
     ICopy,
     IDown,
     IEye,
@@ -354,6 +355,17 @@ export function LayersSidebar(props: {
                         );
                     })}
             </div>
+            <footer class="flex-shrink-0 border-t border-[var(--line)] px-3 py-2">
+                <a
+                    href="https://buymeacoffee.com/theobourgeois"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="inline-flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-wider text-[var(--mute)] transition-colors hover:text-[var(--paper)]"
+                >
+                    <ICoffee class="h-3 w-3" />
+                    Buy me a coffee
+                </a>
+            </footer>
         </aside>
     );
 }

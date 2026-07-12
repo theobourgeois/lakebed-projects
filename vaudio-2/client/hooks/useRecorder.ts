@@ -7,7 +7,6 @@ import {
     exportFilename,
     pickRecorderMime,
     resolveExportSize,
-    type ExportResolutionId,
 } from "../exporting";
 import type { StageSize } from "../frame";
 
@@ -36,9 +35,6 @@ export function useRecorder(deps: {
 }) {
     const [recording, setRecording] = useState(false);
     const [recordingWithMic, setRecordingWithMic] = useState(false);
-    const [exportRes, setExportRes] = useState<ExportResolutionId>("1080");
-    const exportResRef = useRef<ExportResolutionId>(exportRes);
-    exportResRef.current = exportRes;
 
     const exportLockRef = useRef<{ width: number; height: number } | null>(
         null,
@@ -63,20 +59,18 @@ export function useRecorder(deps: {
         engine.setPixelRatioCap(deps.qualityRef.current);
     }
 
-    function applyExportCanvasSize(
-        resolutionId: ExportResolutionId,
-        screenScale = 1,
-    ) {
+    function applyExportCanvasSize() {
         const engine = deps.engineRef.current;
         if (!engine) return null;
-        const size = resolveExportSize(
-            resolutionId,
-            deps.stageSizeRef.current,
-            screenScale,
-        );
+        const { exportFormat, exportQuality } = deps.settingsRef.current;
+        const size = resolveExportSize(exportFormat, exportQuality);
         exportLockRef.current = size;
-        engine.resize(size.width, size.height);
+        // Frame layout must use the output aspect, not the editor's aspect.
+        deps.stageSizeRef.current = size;
+        // Set the cap first so a high-DPI display never briefly allocates an
+        // oversized (for example 3240×5760) WebGL target.
         engine.setPixelRatioCap(1);
+        engine.resize(size.width, size.height);
         return size;
     }
 
@@ -84,14 +78,15 @@ export function useRecorder(deps: {
         const canvas = deps.canvasRef.current;
         const engine = deps.engineRef.current;
         if (!canvas || !engine) return;
-        if (recording) {
-            recorderRef.current?.stop();
+        // Prefer the live MediaRecorder over React state so keyboard
+        // shortcuts still stop capture with a stale effect closure.
+        if (recorderRef.current) {
+            if (recorderRef.current.state === "recording") {
+                recorderRef.current.stop();
+            }
             return;
         }
-        const size = applyExportCanvasSize(
-            exportResRef.current,
-            window.devicePixelRatio || 1,
-        );
+        const size = applyExportCanvasSize();
         if (!size) return;
 
         let includeMic = deps.settingsRef.current.recordMicAudio;
@@ -116,7 +111,11 @@ export function useRecorder(deps: {
         try {
             const recorder = new MediaRecorder(stream, {
                 mimeType,
-                videoBitsPerSecond: 18_000_000,
+                // Scale the bitrate with the chosen frame size for clean 4K.
+                videoBitsPerSecond: Math.min(
+                    50_000_000,
+                    Math.max(24_000_000, size.width * size.height * 6),
+                ),
                 ...(includeMic ? { audioBitsPerSecond: 256_000 } : {}),
             });
             chunksRef.current = [];
@@ -167,7 +166,7 @@ export function useRecorder(deps: {
         const engine = deps.engineRef.current;
         const canvas = deps.canvasRef.current;
         if (!engine || !canvas) return;
-        const size = applyExportCanvasSize(exportResRef.current, 3);
+        const size = applyExportCanvasSize();
         if (!size) return;
         engine.render(deps.buildFrame());
         canvas.toBlob((blob) => {
@@ -186,8 +185,6 @@ export function useRecorder(deps: {
     return {
         recording,
         recordingWithMic,
-        exportRes,
-        setExportRes,
         exportLockRef,
         toggleRecording,
         exportPng,
