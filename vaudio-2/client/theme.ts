@@ -61,6 +61,18 @@ button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
 .rec-dot { animation: rec-blink 1.1s steps(2, end) infinite; }
 @keyframes fade-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 .pop { animation: fade-up 140ms cubic-bezier(.2,.8,.2,1) both; }
+.layer-drop-mark {
+  pointer-events: none;
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  height: 1px;
+  background: var(--acid);
+}
+.layer-drop-mark.above { top: 0; }
+.layer-drop-mark.below { bottom: 0; }
+.layer-row[draggable="true"] { cursor: grab; }
+.layer-row[draggable="true"]:active { cursor: grabbing; }
 input[type="color"] { padding: 0; border: 1px solid var(--line); border-radius: 0; background: transparent; width: 26px; height: 20px; cursor: pointer; }
 input[type="color"]::-webkit-color-swatch-wrapper { padding: 1px; }
 input[type="color"]::-webkit-color-swatch { border: 0; border-radius: 0; }

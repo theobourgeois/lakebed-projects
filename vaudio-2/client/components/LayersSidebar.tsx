@@ -1,5 +1,5 @@
 import type { ComponentChildren } from "preact";
-import { useState } from "preact/hooks";
+import { useRef, useState } from "preact/hooks";
 import { MAX_LAYERS, type SceneLayer } from "../../shared/types";
 import type { ImageInfo } from "../frame";
 import {
@@ -7,14 +7,12 @@ import {
     IChevronDown,
     ICoffee,
     ICopy,
-    IDown,
     IEye,
     IEyeOff,
     IFile,
     IMic,
     IPlus,
     ITrash,
-    IUp,
 } from "../icons";
 import { IconButton } from "../ui";
 
@@ -50,14 +48,35 @@ async function listDevices(kind: LiveKind): Promise<DeviceOption[]> {
         }));
 }
 
-/** Left sidebar: layer stack (top layer first) with per-row actions. */
+function mediaKindTag(kind: SceneLayer["mediaKind"]): string | null {
+    switch (kind) {
+        case "image":
+            return null;
+        case "video":
+            return "vid";
+        case "audio":
+            return "aud";
+        case "camera":
+            return "cam";
+        case "mic":
+            return "mic";
+        case "data":
+            return "dat";
+        default: {
+            const _exhaustive: never = kind;
+            return _exhaustive;
+        }
+    }
+}
+
+/** Left sidebar: layer stack (top layer first) with drag-to-reorder. */
 export function LayersSidebar(props: {
     layers: SceneLayer[];
     imageInfo: Record<string, ImageInfo>;
     selectedId: string | null;
     onSelect: (layerId: string) => void;
     onToggleVisible: (layer: SceneLayer) => void;
-    onMove: (layerId: string, delta: number) => void;
+    onReorder: (fromIndex: number, toIndex: number) => void;
     onDuplicate: (layerId: string) => void;
     onRemove: (layerId: string) => void;
     onImport: () => void;
@@ -68,6 +87,12 @@ export function LayersSidebar(props: {
     const [devicesFor, setDevicesFor] = useState<LiveKind | null>(null);
     const [devices, setDevices] = useState<DeviceOption[]>([]);
     const [devicesLoading, setDevicesLoading] = useState(false);
+    const [dropSlot, setDropSlot] = useState<number | null>(null);
+    const dragFromRef = useRef<number | null>(null);
+
+    // Display order is top layer first; the scene stores bottom-first.
+    const display = props.layers.slice().reverse();
+    const count = props.layers.length;
 
     function closeAddMenu() {
         setAddOpen(false);
@@ -90,6 +115,27 @@ export function LayersSidebar(props: {
         } finally {
             setDevicesLoading(false);
         }
+    }
+
+    function slotFromEvent(e: DragEvent): number {
+        const row = (e.target as HTMLElement).closest("[data-display-index]");
+        if (!row) return dropSlot ?? 0;
+        const index = Number(row.getAttribute("data-display-index"));
+        const rect = row.getBoundingClientRect();
+        return e.clientY < rect.top + rect.height / 2 ? index : index + 1;
+    }
+
+    function onDrop(e: DragEvent) {
+        e.preventDefault();
+        const from = dragFromRef.current;
+        const slot = dropSlot;
+        dragFromRef.current = null;
+        setDropSlot(null);
+        if (from === null || slot === null) return;
+        const adjusted = slot > from ? slot - 1 : slot;
+        if (adjusted === from) return;
+        // Convert display coordinates (top-first) to scene coordinates (bottom-first).
+        props.onReorder(count - 1 - from, count - 1 - adjusted);
     }
 
     const addItems: {
@@ -144,109 +190,106 @@ export function LayersSidebar(props: {
                             onClick={closeAddMenu}
                         />
                         <div class="pop absolute left-3 right-3 top-full z-[100] border border-[var(--line)] bg-[var(--panel-2)] p-1 shadow-2xl">
-                                {addItems.map((item) => (
-                                    <div key={item.label}>
-                                        <div class="flex items-stretch">
+                            {addItems.map((item) => (
+                                <div key={item.label}>
+                                    <div class="flex items-stretch">
+                                        <button
+                                            type="button"
+                                            class="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left hover:bg-[var(--line)]"
+                                            onClick={() => {
+                                                closeAddMenu();
+                                                item.action();
+                                            }}
+                                        >
+                                            <span class="text-[var(--acid)]">
+                                                {item.icon}
+                                            </span>
+                                            <span class="min-w-0">
+                                                <span class="block text-[11px] text-[var(--paper)]">
+                                                    {item.label}
+                                                </span>
+                                                <span class="block font-mono text-[8px] uppercase tracking-wider text-[var(--mute)]">
+                                                    {item.hint}
+                                                </span>
+                                            </span>
+                                        </button>
+                                        {item.liveKind && (
                                             <button
                                                 type="button"
-                                                class="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left hover:bg-[var(--line)]"
-                                                onClick={() => {
-                                                    closeAddMenu();
-                                                    item.action();
-                                                }}
+                                                title={`Choose ${item.label.toLowerCase()} device`}
+                                                class={`grid w-7 flex-shrink-0 place-items-center text-[var(--mute)] hover:bg-[var(--line)] hover:text-[var(--paper)] ${devicesFor === item.liveKind ? "bg-[var(--line)] text-[var(--paper)]" : ""}`}
+                                                onClick={() =>
+                                                    void toggleDevices(
+                                                        item.liveKind!,
+                                                    )
+                                                }
                                             >
-                                                <span class="text-[var(--acid)]">
-                                                    {item.icon}
-                                                </span>
-                                                <span class="min-w-0">
-                                                    <span class="block text-[11px] text-[var(--paper)]">
-                                                        {item.label}
-                                                    </span>
-                                                    <span class="block font-mono text-[8px] uppercase tracking-wider text-[var(--mute)]">
-                                                        {item.hint}
-                                                    </span>
-                                                </span>
+                                                <IChevronDown
+                                                    class={`h-3 w-3 transition-transform ${devicesFor === item.liveKind ? "rotate-180" : ""}`}
+                                                />
                                             </button>
-                                            {item.liveKind && (
-                                                <button
-                                                    type="button"
-                                                    title={`Choose ${item.label.toLowerCase()} device`}
-                                                    class={`grid w-7 flex-shrink-0 place-items-center text-[var(--mute)] hover:bg-[var(--line)] hover:text-[var(--paper)] ${devicesFor === item.liveKind ? "bg-[var(--line)] text-[var(--paper)]" : ""}`}
-                                                    onClick={() =>
-                                                        void toggleDevices(
-                                                            item.liveKind!,
-                                                        )
-                                                    }
-                                                >
-                                                    <IChevronDown
-                                                        class={`h-3 w-3 transition-transform ${devicesFor === item.liveKind ? "rotate-180" : ""}`}
-                                                    />
-                                                </button>
-                                            )}
-                                        </div>
-                                        {item.liveKind &&
-                                            devicesFor === item.liveKind && (
-                                                <div class="mb-0.5 ml-4 border-l border-[var(--line)]">
-                                                    {devicesLoading && (
+                                        )}
+                                    </div>
+                                    {item.liveKind &&
+                                        devicesFor === item.liveKind && (
+                                            <div class="mb-0.5 ml-4 border-l border-[var(--line)]">
+                                                {devicesLoading && (
+                                                    <p class="px-2 py-1.5 font-mono text-[9px] text-[var(--mute)]">
+                                                        Looking for devices…
+                                                    </p>
+                                                )}
+                                                {!devicesLoading &&
+                                                    devices.length === 0 && (
                                                         <p class="px-2 py-1.5 font-mono text-[9px] text-[var(--mute)]">
-                                                            Looking for
-                                                            devices…
+                                                            No devices found
                                                         </p>
                                                     )}
-                                                    {!devicesLoading &&
-                                                        devices.length ===
-                                                            0 && (
-                                                            <p class="px-2 py-1.5 font-mono text-[9px] text-[var(--mute)]">
-                                                                No devices
-                                                                found
-                                                            </p>
-                                                        )}
-                                                    {!devicesLoading &&
-                                                        devices.map(
-                                                            (device) => (
-                                                                <button
-                                                                    key={
-                                                                        device.id
-                                                                    }
-                                                                    type="button"
-                                                                    title={
-                                                                        device.label
-                                                                    }
-                                                                    class="block w-full truncate px-2 py-1.5 text-left text-[10.5px] text-[var(--paper)] hover:bg-[var(--line)]"
-                                                                    onClick={() => {
-                                                                        const kind =
-                                                                            item.liveKind;
-                                                                        closeAddMenu();
-                                                                        if (
-                                                                            kind ===
-                                                                            "camera"
-                                                                        )
-                                                                            props.onAddCamera(
-                                                                                device.id,
-                                                                                device.label,
-                                                                            );
-                                                                        else
-                                                                            props.onAddMic(
-                                                                                device.id,
-                                                                                device.label,
-                                                                            );
-                                                                    }}
-                                                                >
-                                                                    {
-                                                                        device.label
-                                                                    }
-                                                                </button>
-                                                            ),
-                                                        )}
-                                                </div>
-                                            )}
-                                    </div>
-                                ))}
-                            </div>
-                        </>
-                    )}
+                                                {!devicesLoading &&
+                                                    devices.map((device) => (
+                                                        <button
+                                                            key={device.id}
+                                                            type="button"
+                                                            title={device.label}
+                                                            class="block w-full truncate px-2 py-1.5 text-left text-[10.5px] text-[var(--paper)] hover:bg-[var(--line)]"
+                                                            onClick={() => {
+                                                                const kind =
+                                                                    item.liveKind;
+                                                                closeAddMenu();
+                                                                if (
+                                                                    kind ===
+                                                                    "camera"
+                                                                )
+                                                                    props.onAddCamera(
+                                                                        device.id,
+                                                                        device.label,
+                                                                    );
+                                                                else
+                                                                    props.onAddMic(
+                                                                        device.id,
+                                                                        device.label,
+                                                                    );
+                                                            }}
+                                                        >
+                                                            {device.label}
+                                                        </button>
+                                                    ))}
+                                            </div>
+                                        )}
+                                </div>
+                            ))}
+                        </div>
+                    </>
+                )}
             </header>
-            <div class="min-h-0 flex-1 overflow-y-auto py-1">
+            <div
+                class="min-h-0 flex-1 overflow-y-auto py-1"
+                onDragOver={(e: DragEvent) => {
+                    e.preventDefault();
+                    setDropSlot(slotFromEvent(e));
+                }}
+                onDragLeave={() => setDropSlot(null)}
+                onDrop={onDrop}
+            >
                 {props.layers.length === 0 && (
                     <button
                         type="button"
@@ -256,104 +299,105 @@ export function LayersSidebar(props: {
                         Drop, paste, or click to import anything
                     </button>
                 )}
-                {props.layers
-                    .slice()
-                    .reverse()
-                    .map((layer) => {
-                        const meta = props.imageInfo[layer.imageId];
-                        const isSelected = layer.id === props.selectedId;
-                        return (
-                            <div
-                                key={layer.id}
-                                class={`group flex cursor-pointer items-center gap-2 px-2 py-1.5 ${isSelected ? "bg-[var(--acid)]/10" : "hover:bg-[var(--line)]"} ${layer.fx.visible ? "" : "opacity-45"}`}
-                                onClick={() => props.onSelect(layer.id)}
-                            >
-                                <IconButton
-                                    title={layer.fx.visible ? "Hide" : "Show"}
-                                    class="flex-shrink-0"
-                                    onClick={(event) => {
-                                        event.stopPropagation();
-                                        props.onToggleVisible(layer);
-                                    }}
-                                >
-                                    {layer.fx.visible ? (
-                                        <IEye class="h-3.5 w-3.5" />
-                                    ) : (
-                                        <IEyeOff class="h-3.5 w-3.5" />
-                                    )}
-                                </IconButton>
+                {display.map((layer, index) => {
+                    const meta = props.imageInfo[layer.imageId];
+                    const isSelected = layer.id === props.selectedId;
+                    const kindTag = mediaKindTag(layer.mediaKind);
+                    const dropMark =
+                        dropSlot === index
+                            ? "above"
+                            : dropSlot === index + 1 && index === count - 1
+                              ? "below"
+                              : null;
+                    return (
+                        <div
+                            key={layer.id}
+                            draggable
+                            data-display-index={index}
+                            class={`layer-row group relative flex items-center gap-2 px-2 py-1.5 ${isSelected ? "bg-[var(--acid)]/10" : "hover:bg-[var(--line)]"} ${layer.fx.visible ? "" : "opacity-45"}`}
+                            onDragStart={(e: DragEvent) => {
+                                const transfer = e.dataTransfer;
+                                if (transfer) {
+                                    transfer.setData(
+                                        "text/plain",
+                                        String(index),
+                                    );
+                                    transfer.effectAllowed = "move";
+                                }
+                                dragFromRef.current = index;
+                            }}
+                            onDragEnd={() => {
+                                dragFromRef.current = null;
+                                setDropSlot(null);
+                            }}
+                            onClick={() => props.onSelect(layer.id)}
+                        >
+                            {dropMark ? (
                                 <span
-                                    class={`grid h-8 w-8 flex-shrink-0 place-items-center overflow-hidden border ${isSelected ? "border-[var(--acid)]/60" : "border-[var(--line)]"} bg-black`}
-                                >
-                                    {meta?.thumb ? (
-                                        <img
-                                            src={meta.thumb}
-                                            class="h-full w-full object-cover"
-                                        />
-                                    ) : (
-                                        <span class="font-mono text-[8px] text-[#b86a74]">
-                                            {meta?.missing ? "?" : "…"}
-                                        </span>
-                                    )}
-                                </span>
-                                <span class="min-w-0 flex-1 truncate text-[11px] text-[var(--paper)]">
-                                    {layer.name}
-                                </span>
-                                {layer.mediaKind !== "image" && (
-                                    <span class="flex-shrink-0 font-mono text-[8px] uppercase tracking-wider text-[var(--mute)]">
-                                        {layer.mediaKind === "video"
-                                            ? "vid"
-                                            : layer.mediaKind === "audio"
-                                              ? "aud"
-                                              : layer.mediaKind === "camera"
-                                                ? "cam"
-                                                : layer.mediaKind === "mic"
-                                                  ? "mic"
-                                                  : "dat"}
+                                    class={`layer-drop-mark ${dropMark}`}
+                                />
+                            ) : null}
+                            <IconButton
+                                title={layer.fx.visible ? "Hide" : "Show"}
+                                class="flex-shrink-0"
+                                onClick={(event) => {
+                                    event.stopPropagation();
+                                    props.onToggleVisible(layer);
+                                }}
+                            >
+                                {layer.fx.visible ? (
+                                    <IEye class="h-3.5 w-3.5" />
+                                ) : (
+                                    <IEyeOff class="h-3.5 w-3.5" />
+                                )}
+                            </IconButton>
+                            <span
+                                class={`grid h-8 w-8 flex-shrink-0 place-items-center overflow-hidden border ${isSelected ? "border-[var(--acid)]/60" : "border-[var(--line)]"} bg-black`}
+                            >
+                                {meta?.thumb ? (
+                                    <img
+                                        src={meta.thumb}
+                                        draggable={false}
+                                        class="h-full w-full object-cover"
+                                    />
+                                ) : (
+                                    <span class="font-mono text-[8px] text-[#b86a74]">
+                                        {meta?.missing ? "?" : "…"}
                                     </span>
                                 )}
-                                <span class="hidden flex-shrink-0 items-center gap-0.5 group-hover:flex">
-                                    <IconButton
-                                        title="Raise"
-                                        onClick={(event) => {
-                                            event.stopPropagation();
-                                            props.onMove(layer.id, 1);
-                                        }}
-                                    >
-                                        <IUp class="h-3.5 w-3.5" />
-                                    </IconButton>
-                                    <IconButton
-                                        title="Lower"
-                                        onClick={(event) => {
-                                            event.stopPropagation();
-                                            props.onMove(layer.id, -1);
-                                        }}
-                                    >
-                                        <IDown class="h-3.5 w-3.5" />
-                                    </IconButton>
-                                    <IconButton
-                                        title="Duplicate"
-                                        onClick={(event) => {
-                                            event.stopPropagation();
-                                            props.onDuplicate(layer.id);
-                                        }}
-                                    >
-                                        <ICopy class="h-3.5 w-3.5" />
-                                    </IconButton>
-                                    <IconButton
-                                        title="Delete"
-                                        tone="danger"
-                                        onClick={(event) => {
-                                            event.stopPropagation();
-                                            props.onRemove(layer.id);
-                                        }}
-                                    >
-                                        <ITrash class="h-3.5 w-3.5" />
-                                    </IconButton>
+                            </span>
+                            <span class="min-w-0 flex-1 truncate text-[11px] text-[var(--paper)]">
+                                {layer.name}
+                            </span>
+                            {kindTag && (
+                                <span class="flex-shrink-0 font-mono text-[8px] uppercase tracking-wider text-[var(--mute)]">
+                                    {kindTag}
                                 </span>
-                            </div>
-                        );
-                    })}
+                            )}
+                            <span class="hidden flex-shrink-0 items-center gap-0.5 group-hover:flex">
+                                <IconButton
+                                    title="Duplicate"
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        props.onDuplicate(layer.id);
+                                    }}
+                                >
+                                    <ICopy class="h-3.5 w-3.5" />
+                                </IconButton>
+                                <IconButton
+                                    title="Delete"
+                                    tone="danger"
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        props.onRemove(layer.id);
+                                    }}
+                                >
+                                    <ITrash class="h-3.5 w-3.5" />
+                                </IconButton>
+                            </span>
+                        </div>
+                    );
+                })}
             </div>
             <footer class="flex-shrink-0 border-t border-[var(--line)] px-3 py-2">
                 <a

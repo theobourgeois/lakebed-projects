@@ -155,7 +155,7 @@ type ChaosArchetype = {
   distorts: EffectPick[];
   /** 0..1 — how animated this look's layers should be. */
   motion: number;
-  color: "vivid" | "muted" | "mono" | "psycho";
+  color: "vivid" | "muted" | "mono" | "psycho" | "neon" | "glitch";
 };
 
 const CHAOS_ARCHETYPES: ChaosArchetype[] = [
@@ -198,40 +198,47 @@ const CHAOS_ARCHETYPES: ChaosArchetype[] = [
     color: "vivid",
   },
   {
-    name: "Mandala",
+    // Kaleido alone is a static mandala; feeding it back through zoom+rotate
+    // makes it recursively bloom — petals growing out of petals forever.
+    name: "Fractal bloom",
     global: (e) => ({
-      kaleido: rand(0.5, 0.85) * e, mirror: chance(0.5) ? rand(0.2, 0.4) : 0,
-      ripple: rand(0.08, 0.25), chroma: rand(0.2, 0.4), hueOrbit: rand(0.25, 0.5),
-      feedback: rand(0.15, 0.35), trails: rand(0.5, 0.7),
-      saturation: rand(1.25, 1.6), contrast: rand(1.05, 1.18),
-      vignette: rand(0.25, 0.4), speed: rand(0.6, 1),
+      kaleido: rand(0.5, 0.85) * e, ripple: rand(0.08, 0.22),
+      feedback: rand(0.6, 0.8), trails: rand(0.8, 0.92),
+      fbZoom: rand(0.12, 0.3) * (chance(0.35) ? -1 : 1),
+      fbRotate: rand(0.06, 0.18) * (chance(0.5) ? -1 : 1),
+      fbHue: rand(0.1, 0.3), hueOrbit: rand(0.3, 0.6),
+      saturation: rand(1.3, 1.7), contrast: rand(1.05, 1.2),
+      vignette: rand(0.25, 0.4), speed: rand(0.6, 1.05),
     }),
-    blends: ["screen", "add", "hue", "overlay"],
+    blends: ["screen", "add", "hue", "color-dodge"],
     distorts: [
       { key: "kaleido", weight: 2.5, min: 0.3, max: 0.75 },
-      { key: "mirror", weight: 2, min: 0.25, max: 0.6 },
-      { key: "ripple", weight: 1.2, min: 0.1, max: 0.4 },
+      { key: "ripple", weight: 1.5, min: 0.12, max: 0.4 },
+      { key: "bulge", weight: 1.5, min: 0.3, max: 0.6 },
     ],
-    motion: 0.6,
+    motion: 0.7,
     color: "vivid",
   },
   {
-    name: "Broadcast",
+    // Corrupted-codec look: crushed pixel blocks smeared by feedback, torn
+    // chroma, posterized color — like a video file dying mid-keyframe.
+    name: "Datamosh",
     global: (e) => ({
-      scanlines: rand(0.45, 0.7), grain: rand(0.3, 0.55), chroma: rand(0.4, 0.7) * e,
-      warp: rand(0.05, 0.2), feedback: rand(0.3, 0.5), trails: rand(0.6, 0.75),
-      saturation: rand(0.75, 0.95), contrast: rand(1.15, 1.3),
-      vignette: rand(0.4, 0.55), strobe: chance(0.3) ? rand(0.04, 0.1) : 0,
-      speed: rand(0.7, 1.1),
+      chroma: rand(0.5, 0.85) * e, scanlines: rand(0.25, 0.55), grain: rand(0.25, 0.5),
+      warp: rand(0.1, 0.3), feedback: rand(0.5, 0.7), trails: rand(0.7, 0.85),
+      fbZoom: rand(-0.12, -0.03), fbRotate: chance(0.4) ? rand(-0.08, 0.08) : 0,
+      saturation: rand(0.9, 1.3), contrast: rand(1.2, 1.4),
+      strobe: chance(0.45) ? rand(0.06, 0.15) : 0,
+      vignette: rand(0.25, 0.45), speed: rand(0.9, 1.3),
     }),
-    blends: ["normal", "hard-light", "overlay", "luminosity"],
+    blends: ["hard-light", "difference", "exclusion", "luminosity"],
     distorts: [
-      { key: "pixelate", weight: 2.5, min: 0.15, max: 0.5 },
-      { key: "warp", weight: 1.5, min: 0.1, max: 0.35 },
-      { key: "mirror", weight: 1, min: 0.2, max: 0.5 },
+      { key: "pixelate", weight: 3, min: 0.25, max: 0.7 },
+      { key: "mirror", weight: 1.5, min: 0.2, max: 0.5 },
+      { key: "warp", weight: 1.5, min: 0.15, max: 0.4 },
     ],
-    motion: 0.4,
-    color: "muted",
+    motion: 0.8,
+    color: "glitch",
   },
   {
     name: "Acid",
@@ -253,11 +260,13 @@ const CHAOS_ARCHETYPES: ChaosArchetype[] = [
     color: "psycho",
   },
   {
-    name: "Ghost",
+    // Slow smoke folded through a mirror line: the feedback smears become
+    // symmetric ink-blots that keep morphing — a living Rorschach test.
+    name: "Seance",
     global: (e) => ({
       feedback: rand(0.85, 0.93), trails: rand(0.93, 0.97),
       fbZoom: rand(0.03, 0.09), fbRotate: rand(-0.07, 0.07),
-      swirl: rand(0.05, 0.2) * e,
+      mirror: chance(0.65) ? rand(0.3, 0.55) : 0, swirl: rand(0.05, 0.2) * e,
       saturation: rand(0.5, 0.75), contrast: rand(1.08, 1.2),
       grain: rand(0.12, 0.3), vignette: rand(0.45, 0.6), speed: rand(0.4, 0.7),
     }),
@@ -265,27 +274,31 @@ const CHAOS_ARCHETYPES: ChaosArchetype[] = [
     distorts: [
       { key: "warp", weight: 2, min: 0.1, max: 0.35 },
       { key: "swirl", weight: 2, min: 0.1, max: 0.35 },
+      { key: "mirror", weight: 1.5, min: 0.25, max: 0.5 },
     ],
     motion: 0.3,
     color: "mono",
   },
   {
-    name: "Prism",
+    // Layers are edge-detected into glowing wireframes and composited
+    // additively over black; feedback drags the lines into light-trails.
+    name: "Neon skeleton",
     global: (e) => ({
-      chroma: rand(0.7, 0.95) * e, ripple: rand(0.2, 0.35), warp: rand(0.2, 0.4),
-      feedback: rand(0.45, 0.65), trails: rand(0.75, 0.85), fbZoom: rand(-0.2, -0.08),
-      grain: rand(0.1, 0.25), strobe: chance(0.4) ? rand(0.06, 0.14) : 0,
-      saturation: rand(1.1, 1.4), contrast: rand(1.1, 1.25),
-      vignette: rand(0.2, 0.35), speed: rand(1.1, 1.5),
+      warp: rand(0.15, 0.35) * e, chroma: rand(0.3, 0.55),
+      feedback: rand(0.55, 0.75), trails: rand(0.8, 0.9),
+      fbZoom: rand(0.04, 0.12), fbHue: rand(0.15, 0.35),
+      hueOrbit: rand(0.25, 0.5), saturation: rand(1.3, 1.7),
+      contrast: rand(1.25, 1.45), grain: rand(0.05, 0.2),
+      vignette: rand(0.35, 0.55), speed: rand(0.8, 1.25), bgMode: 0,
     }),
-    blends: ["add", "screen", "color-dodge"],
+    blends: ["add", "color-dodge", "screen"],
     distorts: [
-      { key: "ripple", weight: 2.5, min: 0.15, max: 0.45 },
-      { key: "warp", weight: 2, min: 0.2, max: 0.5 },
-      { key: "pixelate", weight: 1, min: 0.1, max: 0.4 },
+      { key: "warp", weight: 2.5, min: 0.15, max: 0.45 },
+      { key: "swirl", weight: 2, min: 0.15, max: 0.4 },
+      { key: "ripple", weight: 1.5, min: 0.1, max: 0.35 },
     ],
-    motion: 0.9,
-    color: "vivid",
+    motion: 0.8,
+    color: "neon",
   },
   {
     name: "Vortex",
@@ -306,22 +319,26 @@ const CHAOS_ARCHETYPES: ChaosArchetype[] = [
     color: "vivid",
   },
   {
-    name: "Hall of mirrors",
+    // Stargate sequence: violent feedback zoom stretches everything into
+    // light-streaks racing past the camera, chroma tearing at the edges.
+    name: "Hyperdrive",
     global: (e) => ({
-      mirror: rand(0.35, 0.65) * e, zoom: rand(0.1, 0.3), warp: rand(0.1, 0.3),
-      chroma: rand(0.1, 0.3), hueOrbit: rand(0.05, 0.2),
-      feedback: rand(0.2, 0.45), trails: rand(0.55, 0.75), fbZoom: rand(0.05, 0.15),
-      saturation: rand(1, 1.3), contrast: rand(1.15, 1.3),
-      vignette: rand(0.3, 0.5), speed: rand(0.7, 1.15),
+      zoom: rand(0.2, 0.45) * e,
+      feedback: rand(0.75, 0.9), trails: rand(0.88, 0.95),
+      fbZoom: rand(0.25, 0.45) * (chance(0.25) ? -1 : 1),
+      chroma: rand(0.3, 0.6), hueOrbit: rand(0.2, 0.45),
+      grain: rand(0.08, 0.2), strobe: chance(0.5) ? rand(0.08, 0.16) : 0,
+      saturation: rand(1.15, 1.5), contrast: rand(1.1, 1.25),
+      vignette: rand(0.3, 0.5), speed: rand(1.2, 1.8),
     }),
-    blends: ["normal", "overlay", "hard-light", "difference"],
+    blends: ["add", "screen", "lighten"],
     distorts: [
-      { key: "mirror", weight: 2.5, min: 0.25, max: 0.65 },
-      { key: "kaleido", weight: 1.5, min: 0.25, max: 0.55 },
-      { key: "bulge", weight: 1.5, min: 0.3, max: 0.6 },
+      { key: "warp", weight: 2.5, min: 0.2, max: 0.5 },
+      { key: "bulge", weight: 2, min: 0.35, max: 0.7 },
+      { key: "pixelate", weight: 1, min: 0.1, max: 0.3 },
     ],
-    motion: 0.5,
-    color: "muted",
+    motion: 1,
+    color: "vivid",
   },
 ];
 
@@ -463,13 +480,25 @@ export function randomLayerFx(
       if (chance(0.35)) next.posterize = rand(0.25, 0.6);
       else if (chance(0.2)) next.invert = rand(0.6, 1);
       break;
+    case "neon":
+      // Edge-detect into glowing wireframes; base layer keeps some fill so
+      // the frame doesn't collapse to pure line art.
+      next.saturation = rand(1.3, 1.8);
+      next.edges = isBase ? rand(0.35, 0.6) : rand(0.55, 0.9);
+      next.brightness = rand(1, 1.2);
+      break;
+    case "glitch":
+      next.saturation = rand(0.8, 1.5);
+      if (chance(0.6)) next.posterize = rand(0.3, 0.7);
+      if (chance(0.25)) next.invert = rand(0.4, 0.8);
+      break;
   }
   if (chance(0.35)) next.chroma = rand(0.1, 0.45) * strength;
   if (archetype.color !== "mono" && chance(0.2)) {
     next.tintAmount = rand(0.15, 0.4);
     next.tintColor = theme.tintFor(slot);
   }
-  if (!next.posterize && chance(0.12)) next.edges = rand(0.2, 0.6);
+  if (!next.posterize && !next.edges && chance(0.12)) next.edges = rand(0.2, 0.6);
 
   // Motion character comes from the archetype; upper layers stay calmer so
   // the frame doesn't turn into everything-wiggling-at-once.

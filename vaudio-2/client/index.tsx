@@ -240,17 +240,21 @@ export function App() {
         }));
     }
 
-    function moveLayer(layerId: string, delta: number) {
+    /** Doc order is bottom-first; `from`/`to` are indices in that array. */
+    function reorderLayer(fromIndex: number, toIndex: number) {
         setScene((previous) => {
-            const index = previous.layers.findIndex(
-                (layer) => layer.id === layerId,
-            );
-            const next = index + delta;
-            if (index < 0 || next < 0 || next >= previous.layers.length)
+            if (
+                fromIndex === toIndex ||
+                fromIndex < 0 ||
+                toIndex < 0 ||
+                fromIndex >= previous.layers.length ||
+                toIndex >= previous.layers.length
+            ) {
                 return previous;
+            }
             const layers = previous.layers.slice();
-            const [layer] = layers.splice(index, 1);
-            layers.splice(next, 0, layer);
+            const [layer] = layers.splice(fromIndex, 1);
+            layers.splice(toIndex, 0, layer);
             return { ...previous, layers };
         });
     }
@@ -1076,7 +1080,7 @@ export function App() {
                                 visible: !layer.fx.visible,
                             })
                         }
-                        onMove={moveLayer}
+                        onReorder={reorderLayer}
                         onDuplicate={duplicateLayer}
                         onRemove={removeLayer}
                         onImport={() => fileRef.current?.click()}
