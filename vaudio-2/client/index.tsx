@@ -46,6 +46,7 @@ import { useRecorder } from "./hooks/useRecorder";
 import { useSceneHistory } from "./hooks/useSceneHistory";
 import { useToast } from "./hooks/useToast";
 import {
+    createChaosTheme,
     mutateGlobalFx,
     randomGlobalFx,
     randomLayerFx,
@@ -315,15 +316,17 @@ export function App() {
     }
 
     function chaosScene() {
+        const theme = createChaosTheme();
         setScene((previous) => ({
             ...previous,
-            global: randomGlobalFx(previous.global),
-            layers: previous.layers.map((layer) => ({
+            global: randomGlobalFx(previous.global, theme),
+            layers: previous.layers.map((layer, index) => ({
                 ...layer,
-                fx: randomLayerFx(layer.fx),
+                fx: randomLayerFx(layer.fx, theme, index),
             })),
         }));
         engineRef.current?.clearFeedback();
+        showToast(`Chaos — ${theme.archetype.name}`);
     }
 
     /** Full defaults for world FX and every layer's effects (keeps layout). */

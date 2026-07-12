@@ -214,7 +214,6 @@ export function usePlayMode(deps: {
             event.preventDefault();
             if (event.repeat) return;
             deps.onChaos();
-            deps.showToast("Chaos");
             addKick({ strobe: 0.18, chroma: 0.08, zoom: 0.06 });
             return;
         }
