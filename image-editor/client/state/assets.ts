@@ -17,6 +17,7 @@ export type AssetEntry = {
 const entries = new Map<string, AssetEntry>();
 const inflight = new Map<string, Promise<AssetEntry>>();
 const images = new Map<string, Promise<HTMLImageElement>>();
+const paintInflight = new Map<string, Promise<AssetEntry>>();
 const listeners = new Set<() => void>();
 
 function notify(): void {
@@ -37,6 +38,13 @@ export function seedAsset(id: string, entry: AssetEntry): void {
 
 export function getAssetEntry(id: string): AssetEntry | null {
   return entries.get(id) ?? entries.get(resolveAssetId(id)) ?? null;
+}
+
+/** Prefer a local data URL so display doesn't flash when a remote URL arrives later. */
+export function displaySrc(entry: AssetEntry): string {
+  if (entry.paintSrc?.startsWith("data:")) return entry.paintSrc;
+  if (entry.src.startsWith("data:")) return entry.src;
+  return entry.paintSrc || entry.src;
 }
 
 export function ensureAsset(id: string): Promise<AssetEntry> {
@@ -70,11 +78,29 @@ function paintUrl(entry: AssetEntry): string {
   return entry.paintSrc || entry.src;
 }
 
+async function ensurePaintAsset(id: string): Promise<AssetEntry> {
+  const entry = await ensureAsset(id);
+  if (entry.paintSrc || entry.src.startsWith("data:")) return entry;
+  const existing = paintInflight.get(id);
+  if (existing) return existing;
+  const promise = api.getAssetPaint(resolveAssetId(id)).then((payload) => {
+    const current = getAssetEntry(id) ?? entry;
+    const next = { ...current, paintSrc: payload.src };
+    entries.set(id, next);
+    const resolved = resolveAssetId(id);
+    if (resolved !== id) entries.set(resolved, next);
+    notify();
+    return next;
+  }).finally(() => paintInflight.delete(id));
+  paintInflight.set(id, promise);
+  return promise;
+}
+
 /** Decoded image element for canvas rendering (export, thumbnails). */
 export function loadImage(id: string): Promise<HTMLImageElement> {
   const cached = images.get(id);
   if (cached) return cached;
-  const promise = ensureAsset(id).then(
+  const promise = ensurePaintAsset(id).then(
     (entry) =>
       new Promise<HTMLImageElement>((resolve, reject) => {
         const src = paintUrl(entry);
@@ -93,12 +119,26 @@ export function loadImage(id: string): Promise<HTMLImageElement> {
   return promise;
 }
 
+/** Decode a data URL / image URL so swapping an <img> src won't blank a frame. */
+export function decodeSrc(src: string): Promise<void> {
+  const img = new Image();
+  img.src = src;
+  if (typeof img.decode === "function") {
+    return img.decode().catch(() => undefined);
+  }
+  return new Promise((resolve) => {
+    img.onload = () => resolve();
+    img.onerror = () => resolve();
+    if (img.complete) resolve();
+  });
+}
+
 /** Component hook: returns the asset once available, kicking off a fetch. */
 export function useAssetEntry(id: string): AssetEntry | null {
-  const [entry, setEntry] = useState<AssetEntry | null>(() => getAssetEntry(id));
+  const [, setVersion] = useState(0);
 
   useEffect(() => {
-    const check = () => setEntry(getAssetEntry(id));
+    const check = () => setVersion((value) => value + 1);
     check();
     listeners.add(check);
     ensureAsset(id).catch((error) => console.error("Asset load failed:", error));
@@ -107,5 +147,5 @@ export function useAssetEntry(id: string): AssetEntry | null {
     };
   }, [id]);
 
-  return entry;
+  return getAssetEntry(id);
 }

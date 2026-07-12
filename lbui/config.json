@@ -2,6 +2,7 @@
   "ports": {
     "michaelgame": 3456,
     "vaudio": 3005,
-    "image-editor": 3003
+    "image-editor": 3003,
+    "vaudio-2": 3006
   }
 }

@@ -8,10 +8,16 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import type { LayerRow, ProjectMeta } from "../../shared/types";
 import {
   closeProject,
+  combineSelection,
+  copySelection,
+  cutSelection,
   deleteSelection,
   duplicateSelection,
+  flipSelectionHorizontal,
+  finishTextEditing,
   nudgeSelection,
   openProject,
+  pasteClipboard,
   setSelection
 } from "../state/actions";
 import { queryResult } from "../state/api";
@@ -53,6 +59,24 @@ function useEditorShortcuts() {
         redo();
         return;
       }
+      if (mod && e.key.toLowerCase() === "c") {
+        e.preventDefault(); copySelection(); return;
+      }
+      if (mod && e.key.toLowerCase() === "x") {
+        e.preventDefault(); cutSelection(); return;
+      }
+      if (mod && e.key.toLowerCase() === "v") {
+        e.preventDefault(); pasteClipboard(); return;
+      }
+      if (mod && e.key.toLowerCase() === "j") {
+        e.preventDefault(); duplicateSelection(); return;
+      }
+      if (mod && e.key.toLowerCase() === "e") {
+        e.preventDefault(); void combineSelection(); return;
+      }
+      if (mod && e.key.toLowerCase() === "h") {
+        e.preventDefault(); flipSelectionHorizontal(); return;
+      }
       if (mod && e.key.toLowerCase() === "d") {
         e.preventDefault();
         duplicateSelection();
@@ -79,16 +103,40 @@ function useEditorShortcuts() {
         return;
       }
       if (e.key === "Escape") {
-        setSelection([]);
+        if (getState().tool === "crop") setState({ tool: "move", cropRect: null });
+        else setSelection([]);
         return;
       }
       if (e.key === "v" || e.key === "V") {
+        finishTextEditing();
         setState({ tool: "move" });
         return;
       }
       if (e.key === "h" || e.key === "H") {
+        finishTextEditing();
         setState({ tool: "hand" });
         return;
+      }
+      if (e.key === "b" || e.key === "B") {
+        finishTextEditing();
+        setState({ tool: "brush" }); return;
+      }
+      if (e.key === "t" || e.key === "T") {
+        finishTextEditing();
+        setState({ tool: "text" }); return;
+      }
+      if (e.key === "x" || e.key === "X") {
+        const state = getState();
+        setState({ foregroundColor: state.backgroundColor, backgroundColor: state.foregroundColor });
+        return;
+      }
+      if (e.key === "d" || e.key === "D") {
+        setState({ foregroundColor: "#111111", backgroundColor: "#ffffff" });
+        return;
+      }
+      if (e.key === "c" || e.key === "C") {
+        finishTextEditing();
+        setState({ tool: "crop", cropRect: null }); return;
       }
       const step = e.shiftKey ? 10 : 1;
       if (e.key === "ArrowLeft") {

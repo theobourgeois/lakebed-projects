@@ -3,16 +3,21 @@
 // use the transient path at pointer-move rate and commit once on release.
 
 import {
+  type BlendMode,
   decodeTransform,
   encodeTransform,
+  MAX_PROJECT_DIM,
   type Layer,
+  type TextLayerData,
   type LayerRow,
   type LayerTransform,
   type ProjectDoc,
   type ProjectMeta
 } from "../../shared/types";
+import { layerAabb } from "../../shared/geometry";
 import { renderThumb } from "../lib/render";
-import { seedAsset } from "./assets";
+import { getAssetEntry, loadImage, seedAsset, decodeSrc } from "./assets";
+import { armBrushOverlayClear, clearBrushOverlayNow } from "./brushOverlay";
 import { pushHistory, resetHistory } from "./history";
 import { enqueue, newClientId } from "./persist";
 import { getState, setState, updateDoc } from "./store";
@@ -55,7 +60,7 @@ export function openProject(meta: ProjectMeta, rows: LayerRow[]): void {
 }
 
 export function closeProject(): void {
-  setState({ doc: null, selection: [] });
+  setState({ doc: null, selection: [], tool: "move", cropRect: null, snapGuides: null, blendPreview: null, textEditing: null });
   resetHistory();
 }
 
@@ -175,6 +180,22 @@ export function toggleVisible(id: string): void {
   ]);
 }
 
+export function flipSelectionHorizontal(): void {
+  const { doc, selection } = getState();
+  if (!doc) return;
+  commitTransforms("Flip horizontal", doc.layers
+    .filter((layer) => selection.includes(layer.id))
+    .map((layer) => ({ id: layer.id, before: { flipX: layer.flipX }, after: { flipX: !layer.flipX } })));
+}
+
+export function setSelectionBlendMode(blendMode: BlendMode): void {
+  const { doc, selection } = getState();
+  if (!doc) return;
+  commitTransforms("Blend mode", doc.layers
+    .filter((layer) => selection.includes(layer.id))
+    .map((layer) => ({ id: layer.id, before: { blendMode: layer.blendMode }, after: { blendMode } })));
+}
+
 // ---------------------------------------------------------------------------
 // Structural edits (add / delete / duplicate / reorder)
 
@@ -276,6 +297,37 @@ export function duplicateSelection(): void {
   });
 }
 
+let clipboard: Layer[] = [];
+
+export function copySelection(): void {
+  const { doc, selection } = getState();
+  if (!doc) return;
+  clipboard = doc.layers.filter((layer) => selection.includes(layer.id)).map((layer) => ({ ...layer }));
+}
+
+export function cutSelection(): void {
+  copySelection();
+  deleteSelection();
+}
+
+export function pasteClipboard(): void {
+  const doc = getState().doc;
+  if (!doc || clipboard.length === 0) return;
+  const items = clipboard.map((layer, i) => ({
+    layer: { ...layer, id: newClientId("layer"), name: `${layer.name} copy`, x: layer.x + 20, y: layer.y + 20 },
+    index: doc.layers.length + i
+  }));
+  clipboard = items.map((item) => ({ ...item.layer }));
+  const ids = items.map((item) => item.layer.id);
+  rawInsertLayers(items);
+  setSelection(ids);
+  pushHistory({
+    label: "Paste",
+    undo: () => rawDeleteLayers(ids),
+    redo: () => { rawInsertLayers(items); setSelection(ids); }
+  });
+}
+
 export function addImageLayers(images: ImportedImage[], at?: { x: number; y: number }): void {
   const doc = getState().doc;
   if (!doc || images.length === 0) return;
@@ -303,7 +355,9 @@ export function addImageLayers(images: ImportedImage[], at?: { x: number; y: num
         h,
         rotation: 0,
         opacity: 1,
-        visible: true
+        visible: true,
+        flipX: false,
+        blendMode: "normal"
       },
       index: doc.layers.length + i
     };
@@ -343,6 +397,482 @@ export function addImageLayers(images: ImportedImage[], at?: { x: number; y: num
       setSelection(ids);
     }
   });
+}
+
+type RasterBounds = { x: number; y: number; w: number; h: number };
+
+function replaceLayersWithRaster(ids: string[], image: ImportedImage, bounds: RasterBounds, index: number): void {
+  const doc = getState().doc;
+  if (!doc) return;
+  const oldItems = capturePlacement(doc, ids);
+  if (oldItems.length === 0) return;
+  const assetId = newClientId("asset");
+  const layer: Layer = {
+    id: newClientId("layer"), assetId, name: image.name,
+    ...bounds, rotation: 0, opacity: 1, visible: true, flipX: false, blendMode: "normal"
+  };
+  const newItem = { layer, index };
+  seedAsset(assetId, { src: image.src, paintSrc: image.src, width: image.width, height: image.height });
+
+  rawDeleteLayers(ids);
+  updateDoc((d) => {
+    const layers = [...d.layers];
+    layers.splice(Math.min(index, layers.length), 0, layer);
+    return { ...d, layers };
+  });
+  enqueue({
+    kind: "addLayer", projectId: doc.id, clientId: layer.id, clientKey: newClientId("key"),
+    name: layer.name, data: encodeTransform(layer),
+    asset: { clientId: assetId, src: image.src, width: image.width, height: image.height }
+  });
+  enqueue({ kind: "setOrder", projectId: doc.id, ids: getState().doc?.layers.map((l) => l.id) ?? [] });
+  setSelection([layer.id]);
+  scheduleThumbRefresh();
+
+  pushHistory({
+    label: image.name,
+    undo: () => { rawDeleteLayers([layer.id]); rawInsertLayers(oldItems); setSelection(ids); },
+    redo: () => { rawDeleteLayers(ids); rawInsertLayers([newItem]); setSelection([layer.id]); }
+  });
+}
+
+export async function combineSelection(): Promise<void> {
+  const { doc, selection } = getState();
+  if (!doc) return;
+  const layers = doc.layers.filter((layer) => selection.includes(layer.id) && layer.visible);
+  if (layers.length < 2) return;
+  const boxes = layers.map(layerAabb);
+  const x = Math.min(...boxes.map((b) => b.x));
+  const y = Math.min(...boxes.map((b) => b.y));
+  const right = Math.max(...boxes.map((b) => b.x + b.w));
+  const bottom = Math.max(...boxes.map((b) => b.y + b.h));
+  const width = Math.max(1, Math.ceil(right - x));
+  const height = Math.max(1, Math.ceil(bottom - y));
+  const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height;
+  const ctx = canvas.getContext("2d"); if (!ctx) return;
+  let images: HTMLImageElement[];
+  try {
+    images = await Promise.all(layers.map((l) => loadImage(l.assetId)));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not load image pixels";
+    window.alert(`Could not combine layers: ${message}`);
+    return;
+  }
+  layers.forEach((layer, i) => {
+    const img = images[i];
+    ctx.save(); ctx.globalAlpha = layer.opacity; ctx.globalCompositeOperation = layer.blendMode as GlobalCompositeOperation;
+    ctx.translate(layer.x + layer.w / 2 - x, layer.y + layer.h / 2 - y);
+    ctx.rotate(layer.rotation * Math.PI / 180); ctx.scale(layer.flipX ? -1 : 1, 1);
+    ctx.drawImage(img, -layer.w / 2, -layer.h / 2, layer.w, layer.h); ctx.restore();
+  });
+  const index = Math.min(...doc.layers.map((l, i) => selection.includes(l.id) ? i : Infinity));
+  replaceLayersWithRaster(layers.map((l) => l.id), { src: canvas.toDataURL("image/png"), width, height, name: "Combined layers" }, { x, y, w: width, h: height }, index);
+}
+
+export async function cropSelection(): Promise<void> {
+  const { doc, selection, cropRect } = getState();
+  if (!doc || selection.length !== 1 || !cropRect || cropRect.w < 2 || cropRect.h < 2) return;
+  const layer = doc.layers.find((l) => l.id === selection[0]);
+  if (!layer) return;
+  const bounds = layerAabb(layer);
+  const x = Math.max(cropRect.x, bounds.x);
+  const y = Math.max(cropRect.y, bounds.y);
+  const right = Math.min(cropRect.x + cropRect.w, bounds.x + bounds.w);
+  const bottom = Math.min(cropRect.y + cropRect.h, bounds.y + bounds.h);
+  if (right - x < 2 || bottom - y < 2) {
+    window.alert("Draw the crop area over the selected layer.");
+    setState({ cropRect: null });
+    return;
+  }
+  const rect = { x, y, w: right - x, h: bottom - y };
+  const width = Math.max(1, Math.round(rect.w));
+  const height = Math.max(1, Math.round(rect.h));
+  const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height;
+  const ctx = canvas.getContext("2d"); if (!ctx) return;
+  let img: HTMLImageElement;
+  try {
+    img = await loadImage(layer.assetId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not load image pixels";
+    window.alert(`Could not crop layer: ${message}`);
+    setState({ cropRect: null });
+    return;
+  }
+  ctx.globalAlpha = layer.opacity;
+  ctx.translate(layer.x + layer.w / 2 - rect.x, layer.y + layer.h / 2 - rect.y);
+  ctx.rotate(layer.rotation * Math.PI / 180); ctx.scale(layer.flipX ? -1 : 1, 1);
+  ctx.drawImage(img, -layer.w / 2, -layer.h / 2, layer.w, layer.h);
+  const index = doc.layers.findIndex((l) => l.id === layer.id);
+  replaceLayersWithRaster([layer.id], { src: canvas.toDataURL("image/png"), width, height, name: `${layer.name} cropped` }, rect, index);
+  setState({ tool: "move", cropRect: null });
+}
+
+export function cropCanvas(): void {
+  const { doc, cropRect } = getState();
+  if (!doc || !cropRect || cropRect.w < 2 || cropRect.h < 2) return;
+  const x = Math.round(cropRect.x);
+  const y = Math.round(cropRect.y);
+  const width = Math.max(1, Math.min(MAX_PROJECT_DIM, Math.round(cropRect.w)));
+  const height = Math.max(1, Math.min(MAX_PROJECT_DIM, Math.round(cropRect.h)));
+  const before = {
+    width: doc.width,
+    height: doc.height,
+    positions: doc.layers.map((layer) => ({ id: layer.id, x: layer.x, y: layer.y }))
+  };
+  const after = {
+    width,
+    height,
+    positions: before.positions.map((layer) => ({ id: layer.id, x: layer.x - x, y: layer.y - y }))
+  };
+
+  const apply = (snapshot: typeof before) => {
+    updateDoc((current) => ({
+      ...current,
+      width: snapshot.width,
+      height: snapshot.height,
+      layers: current.layers.map((layer) => {
+        const position = snapshot.positions.find((item) => item.id === layer.id);
+        return position ? { ...layer, x: position.x, y: position.y } : layer;
+      })
+    }));
+    enqueue({ kind: "resizeProject", id: doc.id, width: snapshot.width, height: snapshot.height });
+    for (const position of snapshot.positions) persistLayerNow(position.id);
+    scheduleThumbRefresh();
+  };
+
+  apply(after);
+  setState({ tool: "move", cropRect: null });
+  pushHistory({ label: "Crop canvas", undo: () => apply(before), redo: () => apply(after) });
+}
+
+/** Tiny transparent PNG — full-canvas blanks exceed hosted DB value limits. */
+const EMPTY_PNG =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+function blankLayerAsset(width: number, height: number): { src: string; width: number; height: number } {
+  return { src: EMPTY_PNG, width: Math.max(1, width), height: Math.max(1, height) };
+}
+
+function applyLayerRaster(
+  layerId: string,
+  src: string,
+  width: number,
+  height: number,
+  clearText: boolean
+): void {
+  const assetId = newClientId("asset");
+  seedAsset(assetId, { src, paintSrc: src, width, height });
+  updateDoc((doc) => ({
+    ...doc,
+    layers: doc.layers.map((item) => {
+      if (item.id !== layerId) return item;
+      if (!clearText) return { ...item, assetId };
+      const { text: _text, ...rest } = item;
+      return { ...rest, assetId };
+    })
+  }));
+  const updated = getState().doc?.layers.find((item) => item.id === layerId);
+  if (updated) enqueue({ kind: "updateLayer", id: layerId, data: encodeTransform(updated) });
+  enqueue({ kind: "replaceLayerAsset", id: layerId, clientAssetId: assetId, src, width, height });
+  scheduleThumbRefresh();
+}
+
+/** Transparent document-sized layer at the top of the stack. */
+export function addBlankLayer(): string | null {
+  const doc = getState().doc;
+  if (!doc) return null;
+  const image = blankLayerAsset(doc.width, doc.height);
+  const assetId = newClientId("asset");
+  seedAsset(assetId, { src: image.src, paintSrc: image.src, width: image.width, height: image.height });
+  const layer: Layer = {
+    id: newClientId("layer"),
+    assetId,
+    name: `Layer ${doc.layers.length + 1}`,
+    x: 0,
+    y: 0,
+    w: doc.width,
+    h: doc.height,
+    rotation: 0,
+    opacity: 1,
+    visible: true,
+    flipX: false,
+    blendMode: "normal"
+  };
+  const index = doc.layers.length;
+  updateDoc((d) => ({ ...d, layers: [...d.layers, layer] }));
+  enqueue({
+    kind: "addLayer",
+    projectId: doc.id,
+    clientId: layer.id,
+    clientKey: newClientId("key"),
+    name: layer.name,
+    data: encodeTransform(layer),
+    asset: { clientId: assetId, src: image.src, width: image.width, height: image.height }
+  });
+  setSelection([layer.id]);
+  scheduleThumbRefresh();
+  pushHistory({
+    label: "New layer",
+    undo: () => rawDeleteLayers([layer.id]),
+    redo: () => {
+      rawInsertLayers([{ layer, index }]);
+      setSelection([layer.id]);
+    }
+  });
+  return layer.id;
+}
+
+/** Ensure a paintable layer exists; creates a blank one (no history) when the doc is empty. */
+function paintTargetLayer(): { layer: Layer; created: boolean } | null {
+  const { doc, selection } = getState();
+  if (!doc) return null;
+  const selectedId = selection[selection.length - 1];
+  const selected = selectedId ? doc.layers.find((layer) => layer.id === selectedId) : undefined;
+  if (selected) return { layer: selected, created: false };
+  if (doc.layers.length > 0) {
+    const top = doc.layers[doc.layers.length - 1];
+    setSelection([top.id]);
+    return { layer: top, created: false };
+  }
+
+  const image = blankLayerAsset(doc.width, doc.height);
+  const assetId = newClientId("asset");
+  seedAsset(assetId, { src: image.src, paintSrc: image.src, width: image.width, height: image.height });
+  const layer: Layer = {
+    id: newClientId("layer"),
+    assetId,
+    name: "Layer 1",
+    x: 0,
+    y: 0,
+    w: doc.width,
+    h: doc.height,
+    rotation: 0,
+    opacity: 1,
+    visible: true,
+    flipX: false,
+    blendMode: "normal"
+  };
+  updateDoc((d) => ({ ...d, layers: [...d.layers, layer] }));
+  enqueue({
+    kind: "addLayer",
+    projectId: doc.id,
+    clientId: layer.id,
+    clientKey: newClientId("key"),
+    name: layer.name,
+    data: encodeTransform(layer),
+    asset: { clientId: assetId, src: image.src, width: image.width, height: image.height }
+  });
+  setSelection([layer.id]);
+  return { layer, created: true };
+}
+
+function loadDataUrl(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Failed to decode image"));
+    img.src = src;
+  });
+}
+
+/** Composite a document-space brush stroke onto the current layer. */
+export async function paintBrushStroke(src: string, opacity = 1): Promise<void> {
+  const target = paintTargetLayer();
+  if (!target) return;
+  const { layer, created } = target;
+
+  let base: HTMLImageElement;
+  let stroke: HTMLImageElement;
+  try {
+    [base, stroke] = await Promise.all([loadImage(layer.assetId), loadDataUrl(src)]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not load layer pixels";
+    window.alert(`Could not paint: ${message}`);
+    if (created) rawDeleteLayers([layer.id]);
+    return;
+  }
+
+  const width = Math.max(1, Math.round(layer.w), base.naturalWidth);
+  const height = Math.max(1, Math.round(layer.h), base.naturalHeight);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    if (created) rawDeleteLayers([layer.id]);
+    return;
+  }
+
+  ctx.drawImage(base, 0, 0);
+  const cached = getAssetEntry(layer.assetId);
+  const beforeSrc = cached?.paintSrc?.startsWith("data:")
+    ? cached.paintSrc
+    : canvas.toDataURL("image/png");
+  const beforeText = layer.text ? { ...layer.text } : undefined;
+
+  ctx.save();
+  ctx.globalAlpha = opacity;
+  ctx.translate(width / 2, height / 2);
+  ctx.scale(width / Math.max(1, layer.w), height / Math.max(1, layer.h));
+  if (layer.flipX) ctx.scale(-1, 1);
+  ctx.rotate((-layer.rotation * Math.PI) / 180);
+  ctx.translate(-(layer.x + layer.w / 2), -(layer.y + layer.h / 2));
+  ctx.drawImage(stroke, 0, 0);
+  ctx.restore();
+
+  const afterSrc = canvas.toDataURL("image/png");
+  const clearText = Boolean(layer.text);
+  // Decode before swapping so the layer <img> can paint immediately. The live
+  // overlay stays up until LayerView presents this exact src.
+  await decodeSrc(afterSrc);
+  armBrushOverlayClear(afterSrc);
+  applyLayerRaster(layer.id, afterSrc, width, height, clearText);
+  // Fallback if the layer isn't visible / fails to mount an <img>.
+  window.setTimeout(() => clearBrushOverlayNow(), 2000);
+
+  if (created) {
+    const finalLayer = getState().doc?.layers.find((item) => item.id === layer.id);
+    if (!finalLayer) return;
+    pushHistory({
+      label: "Brush stroke",
+      undo: () => rawDeleteLayers([layer.id]),
+      redo: () => {
+        rawInsertLayers([{ layer: finalLayer, index: 0 }]);
+        setSelection([layer.id]);
+      }
+    });
+    return;
+  }
+
+  pushHistory({
+    label: "Brush stroke",
+    undo: () => {
+      applyLayerRaster(layer.id, beforeSrc, width, height, false);
+      if (beforeText) {
+        updateDoc((doc) => ({
+          ...doc,
+          layers: doc.layers.map((item) => (item.id === layer.id ? { ...item, text: beforeText } : item))
+        }));
+        const updated = getState().doc?.layers.find((item) => item.id === layer.id);
+        if (updated) enqueue({ kind: "updateLayer", id: layer.id, data: encodeTransform(updated) });
+      }
+    },
+    redo: () => applyLayerRaster(layer.id, afterSrc, width, height, clearText)
+  });
+}
+
+function renderTextRaster(text: TextLayerData): { src: string; width: number; height: number } {
+  const lines = (text.content || "Text").replace(/\r/g, "").split("\n");
+  const measure = document.createElement("canvas").getContext("2d");
+  if (!measure) return { src: "", width: 1, height: 1 };
+  measure.font = `${text.fontWeight} ${text.fontSize}px ${text.fontFamily}`;
+  const padding = Math.max(4, Math.ceil(text.fontSize * 0.14));
+  const width = Math.max(1, Math.ceil(Math.max(...lines.map((line) => measure.measureText(line || " ").width)) + padding * 2));
+  const linePx = text.fontSize * text.lineHeight;
+  const height = Math.max(1, Math.ceil(lines.length * linePx + padding * 2));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return { src: "", width: 1, height: 1 };
+  ctx.font = `${text.fontWeight} ${text.fontSize}px ${text.fontFamily}`;
+  ctx.textBaseline = "top";
+  ctx.textAlign = text.align;
+  ctx.fillStyle = text.color;
+  const x = text.align === "left" ? padding : text.align === "center" ? width / 2 : width - padding;
+  lines.forEach((line, index) => ctx.fillText(line || " ", x, padding + index * linePx));
+  return { src: canvas.toDataURL("image/png"), width, height };
+}
+
+function currentTextDefaults(): TextLayerData {
+  const state = getState();
+  return {
+    content: "Text",
+    fontFamily: state.textFontFamily,
+    fontSize: state.textFontSize,
+    fontWeight: state.textFontWeight,
+    align: state.textAlign,
+    color: state.foregroundColor,
+    lineHeight: state.textLineHeight
+  };
+}
+
+export function addTextLayer(at: { x: number; y: number }): string | null {
+  const doc = getState().doc;
+  if (!doc) return null;
+  const text = currentTextDefaults();
+  const image = renderTextRaster(text);
+  if (!image.src) return null;
+  const assetId = newClientId("asset");
+  seedAsset(assetId, { src: image.src, paintSrc: image.src, width: image.width, height: image.height });
+  const layer: Layer = {
+    id: newClientId("layer"), assetId, name: "Text", text: { ...text, rasterWidth: image.width, rasterHeight: image.height },
+    x: at.x, y: at.y, w: image.width, h: image.height,
+    rotation: 0, opacity: 1, visible: true, flipX: false, blendMode: "normal"
+  };
+  updateDoc((d) => ({ ...d, layers: [...d.layers, layer] }));
+  enqueue({
+    kind: "addLayer", projectId: doc.id, clientId: layer.id, clientKey: newClientId("key"),
+    name: layer.name, data: encodeTransform(layer),
+    asset: { clientId: assetId, src: image.src, width: image.width, height: image.height }
+  });
+  setSelection([layer.id]);
+  scheduleThumbRefresh();
+  pushHistory({
+    label: "Add text",
+    undo: () => rawDeleteLayers([layer.id]),
+    redo: () => { rawInsertLayers([{ layer, index: doc.layers.length }]); setSelection([layer.id]); }
+  });
+  return layer.id;
+}
+
+function applyText(layerId: string, text: TextLayerData): void {
+  const layer = getState().doc?.layers.find((item) => item.id === layerId);
+  if (!layer) return;
+  const image = renderTextRaster(text);
+  if (!image.src) return;
+  const cachedAsset = getAssetEntry(layer.assetId);
+  const oldRasterWidth = layer.text?.rasterWidth ?? cachedAsset?.width ?? layer.w;
+  const oldRasterHeight = layer.text?.rasterHeight ?? cachedAsset?.height ?? layer.h;
+  const scaleX = oldRasterWidth > 0 ? layer.w / oldRasterWidth : 1;
+  const scaleY = oldRasterHeight > 0 ? layer.h / oldRasterHeight : 1;
+  const renderedText = { ...text, rasterWidth: image.width, rasterHeight: image.height };
+  const assetId = newClientId("asset");
+  seedAsset(assetId, { src: image.src, paintSrc: image.src, width: image.width, height: image.height });
+  updateDoc((doc) => ({
+    ...doc,
+    layers: doc.layers.map((item) => item.id === layerId
+      ? { ...item, assetId, text: renderedText, w: image.width * scaleX, h: image.height * scaleY }
+      : item)
+  }));
+  const updated = getState().doc?.layers.find((item) => item.id === layerId);
+  if (updated) enqueue({ kind: "updateLayer", id: layerId, data: encodeTransform(updated) });
+  enqueue({ kind: "replaceLayerAsset", id: layerId, clientAssetId: assetId, src: image.src, width: image.width, height: image.height });
+  scheduleThumbRefresh();
+}
+
+export function updateTextLayer(layerId: string, patch: Partial<TextLayerData>, label = "Edit text"): void {
+  const layer = getState().doc?.layers.find((item) => item.id === layerId);
+  if (!layer?.text) return;
+  const before = { ...layer.text };
+  const after = { ...before, ...patch };
+  if (JSON.stringify(before) === JSON.stringify(after)) return;
+  applyText(layerId, after);
+  pushHistory({ label, undo: () => applyText(layerId, before), redo: () => applyText(layerId, after) });
+}
+
+export function beginTextEditing(layerId: string): void {
+  const layer = getState().doc?.layers.find((item) => item.id === layerId);
+  if (!layer?.text) return;
+  setSelection([layerId]);
+  setState({ textEditing: { id: layerId, draft: layer.text.content } });
+}
+
+export function finishTextEditing(): void {
+  const editing = getState().textEditing;
+  if (!editing) return;
+  setState({ textEditing: null });
+  updateTextLayer(editing.id, { content: editing.draft }, "Edit text");
 }
 
 export function reorderLayer(fromIndex: number, toIndex: number): void {

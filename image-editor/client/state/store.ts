@@ -3,9 +3,9 @@
 // instant feedback, and persistence happens in the background (see persist.ts).
 
 import { useEffect, useRef, useState } from "preact/hooks";
-import type { ProjectDoc } from "../../shared/types";
+import type { BlendMode, ProjectDoc, TextAlign } from "../../shared/types";
 
-export type Tool = "move" | "hand";
+export type Tool = "move" | "hand" | "text" | "brush" | "crop";
 export type SaveStatus = "saved" | "saving" | "retrying";
 
 export type EditorView = { zoom: number; panX: number; panY: number };
@@ -23,6 +23,21 @@ export type EditorState = {
   histVersion: number;
   /** Bumped to ask the canvas to re-fit the artboard to the viewport. */
   fitVersion: number;
+  brushSize: number;
+  brushHardness: number;
+  brushOpacity: number;
+  brushFlow: number;
+  foregroundColor: string;
+  backgroundColor: string;
+  textFontFamily: string;
+  textFontSize: number;
+  textFontWeight: number;
+  textAlign: TextAlign;
+  textLineHeight: number;
+  textEditing: { id: string; draft: string } | null;
+  cropRect: { x: number; y: number; w: number; h: number } | null;
+  snapGuides: { x?: number; y?: number } | null;
+  blendPreview: BlendMode | null;
 };
 
 let state: EditorState = {
@@ -35,7 +50,22 @@ let state: EditorState = {
   pendingOps: 0,
   saveError: null,
   histVersion: 0,
-  fitVersion: 0
+  fitVersion: 0,
+  brushSize: 16,
+  brushHardness: 80,
+  brushOpacity: 100,
+  brushFlow: 100,
+  foregroundColor: "#111111",
+  backgroundColor: "#ffffff",
+  textFontFamily: "Instrument Sans",
+  textFontSize: 48,
+  textFontWeight: 400,
+  textAlign: "left",
+  textLineHeight: 1.2,
+  textEditing: null,
+  cropRect: null,
+  snapGuides: null,
+  blendPreview: null
 };
 
 const listeners = new Set<() => void>();

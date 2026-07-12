@@ -1,20 +1,36 @@
-import { capsule, mutation, query, string, table } from "lakebed/server";
+import { capsule, endpoint, json, mutation, query, string, table, text } from "lakebed/server";
 import type { ServerContext } from "lakebed/server";
 import {
   MAX_PROJECT_DIM,
+  MAX_INLINE_SRC_BYTES,
   cleanName,
   clamp,
   decodeStringArray,
   decodeTransform,
   encodeTransform
 } from "../shared/types";
-import { uploadImageDataUrl } from "./s3";
+import {
+  uploadImageDataUrl,
+  createPresignedPut,
+  hasAwsEnv,
+  putObjectBytes
+} from "./s3";
 
-// Clients still send image data URLs on upload; the server puts the bytes in
-// S3 and stores a CloudFront URL on the asset row. getAsset stays a mutation
-// (not a query) so live query payloads stay small.
+// Tiny assets can travel as data URLs in mutations. Large images POST to
+// /assets/upload (same-origin) so the server can PutObject without browser CORS.
 const MAX_SRC_LENGTH = 12_000_000;
-const MAX_THUMB_LENGTH = 300_000;
+const MAX_THUMB_LENGTH = MAX_INLINE_SRC_BYTES;
+const MAX_PAINT_BYTES = 40_000;
+const MAX_UPLOAD_BYTES = 12_000_000;
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + chunk, bytes.length)));
+  }
+  return btoa(binary);
+}
 
 function requireProject(ctx: ServerContext, id: string) {
   const row = ctx.db.projects.get(id);
@@ -63,12 +79,45 @@ async function insertAsset(
   width: number,
   height: number
 ) {
+  // Client already uploaded via presigned PUT — only store the short URL.
+  if (/^https?:\/\//i.test(src)) {
+    const existing = ctx.db.assets
+      .where("projectId", projectId)
+      .all()
+      .find((row) => row.ownerId === ctx.auth.userId && row.src === src);
+    if (existing) return existing;
+    return ctx.db.assets.insert({
+      ownerId: ctx.auth.userId,
+      projectId,
+      src,
+      width: String(checkDim(width)),
+      height: String(checkDim(height))
+    });
+  }
+
   checkDataUrl(src);
-  const url = await uploadImageDataUrl(ctx, projectId, src);
+  if (src.length > MAX_INLINE_SRC_BYTES) {
+    throw new Error(
+      "Image is too large to store inline. Use prepareAssetUpload and upload from the browser."
+    );
+  }
+
+  let stored = src;
+  if (hasAwsEnv(ctx)) {
+    try {
+      stored = await uploadImageDataUrl(ctx, projectId, src);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.log.error("S3 upload failed; keeping inline data URL", { message });
+    }
+  } else {
+    ctx.log.warn("AWS env missing; storing small image as data URL");
+  }
+
   return ctx.db.assets.insert({
     ownerId: ctx.auth.userId,
     projectId,
-    src: url,
+    src: stored,
     width: String(checkDim(width)),
     height: String(checkDim(height))
   });
@@ -215,6 +264,11 @@ export default capsule({
       ctx.db.projects.update(id, { name: cleanName(String(name ?? ""), "Untitled") });
     }),
 
+    resizeProject: mutation((ctx, id: string, width: number, height: number) => {
+      requireProject(ctx, id);
+      ctx.db.projects.update(id, { width: String(checkDim(width)), height: String(checkDim(height)) });
+    }),
+
     setProjectThumb: mutation((ctx, id: string, thumb: string) => {
       requireProject(ctx, id);
       if (typeof thumb !== "string" || thumb.length > MAX_THUMB_LENGTH) {
@@ -306,6 +360,13 @@ export default capsule({
       ctx.db.layers.update(id, { data: encodeTransform(decodeTransform(String(dataJson ?? ""))) });
     }),
 
+    replaceLayerAsset: mutation(async (ctx, id: string, src: string, width: number, height: number) => {
+      const layer = requireLayer(ctx, id);
+      const asset = await insertAsset(ctx, String(layer.projectId), String(src ?? ""), width, height);
+      ctx.db.layers.update(id, { assetId: asset.id });
+      return { assetId: asset.id, src: String(asset.src) };
+    }),
+
     renameLayer: mutation((ctx, id: string, name: string) => {
       requireLayer(ctx, id);
       ctx.db.layers.update(id, { name: cleanName(String(name ?? ""), "Image") });
@@ -332,6 +393,85 @@ export default capsule({
     getAsset: mutation((ctx, id: string) => {
       const row = requireAsset(ctx, id);
       return { id: row.id, src: row.src, width: Number(row.width), height: Number(row.height) };
+    }),
+
+    // Sign a browser PUT to S3, then create the asset row pointing at CloudFront.
+    // Large images never enter Lakebed mutations as data URLs.
+    prepareAssetUpload: mutation(async (ctx, projectId: string, contentType: string, width: number, height: number) => {
+      requireProject(ctx, projectId);
+      if (!hasAwsEnv(ctx)) {
+        throw new Error("Missing AWS server env; cannot prepare upload");
+      }
+      const { uploadUrl, publicUrl } = await createPresignedPut(ctx, projectId, String(contentType ?? ""));
+      const asset = ctx.db.assets.insert({
+        ownerId: ctx.auth.userId,
+        projectId,
+        src: publicUrl,
+        width: String(checkDim(width)),
+        height: String(checkDim(height))
+      });
+      return { assetId: asset.id, uploadUrl, publicUrl };
+    }),
+
+    // Canvas operations need pixel data. Prefer returning remote URLs so the
+    // client can load with CORS (server base64 of large images exceeds hosted limits).
+    getAssetPaint: mutation(async (ctx, id: string) => {
+      const row = requireAsset(ctx, id);
+      const src = String(row.src);
+      if (src.startsWith("data:image/")) return { src };
+      // Only inline tiny remote assets; otherwise the client loads the URL directly.
+      try {
+        const response = await fetch(src);
+        if (!response.ok) return { src };
+        const contentType = response.headers.get("content-type") || "image/png";
+        if (!contentType.toLowerCase().startsWith("image/")) return { src };
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (bytes.byteLength > MAX_PAINT_BYTES) return { src };
+        return { src: `data:${contentType};base64,${bytesToBase64(bytes)}` };
+      } catch {
+        return { src };
+      }
+    })
+  },
+
+  endpoints: {
+    // Same-origin binary upload — avoids S3 CORS and keeps large payloads out of mutations.
+    uploadAsset: endpoint({ method: "POST", path: "/assets/upload" }, async (ctx, req) => {
+      if (!ctx.auth?.userId) return text("Unauthorized", { status: 401 });
+      if (!hasAwsEnv(ctx)) return text("AWS env not configured", { status: 503 });
+
+      const projectId = String(req.query.get("projectId") ?? "");
+      if (!projectId) return text("Missing projectId", { status: 400 });
+      try {
+        requireProject(ctx, projectId);
+      } catch {
+        return text("Project not found", { status: 404 });
+      }
+
+      const width = Number(req.query.get("width") ?? 0);
+      const height = Number(req.query.get("height") ?? 0);
+      const contentType = (req.headers.get("content-type") || "image/png").split(";")[0].trim().toLowerCase();
+      if (!contentType.startsWith("image/")) return text("Content-Type must be an image", { status: 400 });
+
+      const body = await req.bytes();
+      if (body.byteLength < 1) return text("Empty body", { status: 400 });
+      if (body.byteLength > MAX_UPLOAD_BYTES) return text("Image is too large", { status: 413 });
+
+      try {
+        const publicUrl = await putObjectBytes(ctx, projectId, contentType, body);
+        const asset = ctx.db.assets.insert({
+          ownerId: ctx.auth.userId,
+          projectId,
+          src: publicUrl,
+          width: String(checkDim(width || 1)),
+          height: String(checkDim(height || 1))
+        });
+        return json({ assetId: asset.id, publicUrl });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.log.error("uploadAsset failed", { message });
+        return text(message, { status: 502 });
+      }
     })
   }
 });

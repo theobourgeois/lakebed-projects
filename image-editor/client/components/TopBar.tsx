@@ -22,6 +22,35 @@ import {
 } from "./Icons";
 import { ThemeToggle } from "./ThemeToggle";
 
+function SaveStatus() {
+    const saveStatus = useEditor((s) => s.saveStatus);
+    const saveError = useEditor((s) => s.saveError);
+    const pendingOps = useEditor((s) => s.pendingOps);
+    const label =
+        saveError != null
+            ? "Save failed"
+            : saveStatus === "retrying"
+              ? "Retrying…"
+              : saveStatus === "saving" || pendingOps > 0
+                ? "Saving…"
+                : "Saved";
+    const dot =
+        saveError != null ? "error" : saveStatus === "saved" && pendingOps === 0 ? "saved" : "saving";
+    return (
+        <button
+            type="button"
+            className="save-status"
+            title={saveError ?? undefined}
+            onClick={() => {
+                if (saveError) window.alert(saveError);
+            }}
+        >
+            <span className={`save-dot ${dot}`} />
+            <span className="save-label">{label}</span>
+        </button>
+    );
+}
+
 function IconButton({
     label,
     onClick,
@@ -100,11 +129,10 @@ export function TopBar() {
 
             <div className="spacer" />
 
+            <SaveStatus />
+
             <div className="zoom-controls">
-                <IconButton
-                    label="Zoom out (⌘-)"
-                    onClick={() => zoomBy(-1)}
-                >
+                <IconButton label="Zoom out (⌘-)" onClick={() => zoomBy(-1)}>
                     <FiMinus />
                 </IconButton>
                 <button
@@ -130,14 +158,7 @@ export function TopBar() {
                 className="hidden"
                 onChange={(e: Event) => void onFiles(e)}
             />
-            <button
-                type="button"
-                onClick={() => fileRef.current?.click()}
-                className="button"
-            >
-                <FiImage />
-                <span className="add-label">Add image</span>
-            </button>
+
             <button
                 type="button"
                 onClick={() => void downloadPng(getState().doc ?? doc)}

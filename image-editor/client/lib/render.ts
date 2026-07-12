@@ -2,6 +2,7 @@
 
 import type { ProjectDoc } from "../../shared/types";
 import { ensureAsset, loadImage } from "../state/assets";
+import { compactThumbDataUrl, MAX_INLINE_SRC_BYTES } from "../state/upload";
 
 export async function renderDocToCanvas(doc: ProjectDoc, scale: number): Promise<HTMLCanvasElement> {
   const canvas = document.createElement("canvas");
@@ -21,8 +22,10 @@ export async function renderDocToCanvas(doc: ProjectDoc, scale: number): Promise
     if (!img) return;
     ctx.save();
     ctx.globalAlpha = layer.opacity;
+    ctx.globalCompositeOperation = layer.blendMode as GlobalCompositeOperation;
     ctx.translate((layer.x + layer.w / 2) * scale, (layer.y + layer.h / 2) * scale);
     ctx.rotate((layer.rotation * Math.PI) / 180);
+    ctx.scale(layer.flipX ? -1 : 1, 1);
     ctx.drawImage(img, (-layer.w / 2) * scale, (-layer.h / 2) * scale, layer.w * scale, layer.h * scale);
     ctx.restore();
   });
@@ -44,7 +47,9 @@ async function firstLayerSrc(doc: ProjectDoc): Promise<string | null> {
   for (const layer of doc.layers) {
     if (!layer.visible || layer.opacity <= 0) continue;
     const entry = await ensureAsset(layer.assetId).catch(() => null);
-    if (entry?.src) return entry.src;
+    // Prefer short URLs — data URLs / huge remotes won't fit in the thumb column.
+    if (entry?.src && entry.src.length <= MAX_INLINE_SRC_BYTES) return entry.src;
+    if (entry?.src?.startsWith("http")) return entry.src;
   }
   return null;
 }
@@ -66,7 +71,7 @@ export async function renderThumb(doc: ProjectDoc): Promise<string> {
 
   try {
     const canvas = await renderDocToCanvas(doc, scale);
-    return canvas.toDataURL("image/jpeg", 0.85);
+    return compactThumbDataUrl(canvas);
   } catch {
     const fallback = await firstLayerSrc(doc);
     if (fallback) return fallback;

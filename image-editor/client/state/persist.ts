@@ -15,6 +15,7 @@
 import { api } from "./api";
 import { seedAsset } from "./assets";
 import { getState, setState } from "./store";
+import { ensureRemoteAsset } from "./upload";
 
 export type PersistOp =
   | {
@@ -27,10 +28,12 @@ export type PersistOp =
       asset: { ref: string } | { clientId: string; src: string; width: number; height: number };
     }
   | { kind: "updateLayer"; id: string; data: string }
+  | { kind: "replaceLayerAsset"; id: string; clientAssetId: string; src: string; width: number; height: number }
   | { kind: "renameLayer"; id: string; name: string }
   | { kind: "deleteLayer"; id: string }
   | { kind: "setOrder"; projectId: string; ids: string[] }
   | { kind: "renameProject"; id: string; name: string }
+  | { kind: "resizeProject"; id: string; width: number; height: number }
   | { kind: "setThumb"; id: string; thumb: string };
 
 const OP_TIMEOUT_MS = 10_000;
@@ -76,8 +79,12 @@ function opKey(op: PersistOp): string | null {
       return `setOrder:${op.projectId}`;
     case "renameProject":
       return `renameProject:${op.id}`;
+    case "resizeProject":
+      return `resizeProject:${op.id}`;
     case "setThumb":
       return `setThumb:${op.id}`;
+    case "replaceLayerAsset":
+      return `replaceLayerAsset:${op.id}`;
     default:
       return null;
   }
@@ -138,11 +145,36 @@ function delay(ms: number): Promise<void> {
 async function execute(op: PersistOp): Promise<void> {
   switch (op.kind) {
     case "addLayer": {
-      const asset =
-        "ref" in op.asset
-          ? { assetId: resolveAssetId(op.asset.ref) }
-          : { src: op.asset.src, width: op.asset.width, height: op.asset.height };
-      const timeout = "src" in asset ? UPLOAD_TIMEOUT_MS : OP_TIMEOUT_MS;
+      let asset: { assetId?: string; src?: string; width?: number; height?: number };
+      if ("ref" in op.asset) {
+        asset = { assetId: resolveAssetId(op.asset.ref) };
+      } else {
+        const remote = await ensureRemoteAsset(
+          op.projectId,
+          op.asset.src,
+          op.asset.width,
+          op.asset.height
+        );
+        if (remote.assetId) {
+          mapAssetId(op.asset.clientId, remote.assetId);
+          seedAsset(op.asset.clientId, {
+            src: remote.src,
+            paintSrc: op.asset.src.startsWith("data:") ? op.asset.src : undefined,
+            width: op.asset.width,
+            height: op.asset.height
+          });
+          seedAsset(remote.assetId, {
+            src: remote.src,
+            paintSrc: op.asset.src.startsWith("data:") ? op.asset.src : undefined,
+            width: op.asset.width,
+            height: op.asset.height
+          });
+          asset = { assetId: remote.assetId };
+        } else {
+          asset = { src: remote.src, width: remote.width, height: remote.height };
+        }
+      }
+      const timeout = UPLOAD_TIMEOUT_MS;
       const result = await withTimeout(
         api.addLayer(op.projectId, op.clientKey, op.name, op.data, asset),
         timeout
@@ -168,6 +200,34 @@ async function execute(op: PersistOp): Promise<void> {
     }
     case "updateLayer":
       return withTimeout(api.updateLayer(resolveLayerId(op.id), op.data));
+    case "replaceLayerAsset": {
+      const projectId = getState().doc?.id ?? "";
+      const remote = await ensureRemoteAsset(projectId, op.src, op.width, op.height);
+      if (remote.assetId) {
+        mapAssetId(op.clientAssetId, remote.assetId);
+      }
+      const result = await withTimeout(
+        api.replaceLayerAsset(resolveLayerId(op.id), remote.src, op.width, op.height),
+        remote.assetId ? OP_TIMEOUT_MS : UPLOAD_TIMEOUT_MS
+      );
+      mapAssetId(op.clientAssetId, result.assetId);
+      const local = op.src.startsWith("data:");
+      const display = local ? op.src : result.src;
+      const paintSrc = local ? op.src : undefined;
+      seedAsset(op.clientAssetId, {
+        src: display,
+        paintSrc,
+        width: op.width,
+        height: op.height
+      });
+      seedAsset(result.assetId, {
+        src: display,
+        paintSrc,
+        width: op.width,
+        height: op.height
+      });
+      return;
+    }
     case "renameLayer":
       return withTimeout(api.renameLayer(resolveLayerId(op.id), op.name));
     case "deleteLayer":
@@ -176,6 +236,8 @@ async function execute(op: PersistOp): Promise<void> {
       return withTimeout(api.setLayerOrder(op.projectId, op.ids.map(resolveLayerId)));
     case "renameProject":
       return withTimeout(api.renameProject(op.id, op.name));
+    case "resizeProject":
+      return withTimeout(api.resizeProject(op.id, op.width, op.height));
     case "setThumb":
       return withTimeout(api.setProjectThumb(op.id, op.thumb));
   }

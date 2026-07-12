@@ -4,7 +4,7 @@
 // non-component code like the persist queue.
 
 import { useMutation } from "lakebed/client";
-import type { AssetPayload } from "../../shared/types";
+import type { AssetPayload, PaintAssetPayload } from "../../shared/types";
 
 export const api = {
   createProject: useMutation<[name: string, width: number, height: number], { id: string }>("createProject"),
@@ -13,6 +13,7 @@ export const api = {
     { id: string; layerId: string; assetId: string; src: string }
   >("createProjectFromImage"),
   renameProject: useMutation<[id: string, name: string], void>("renameProject"),
+  resizeProject: useMutation<[id: string, width: number, height: number], void>("resizeProject"),
   setProjectThumb: useMutation<[id: string, thumb: string], void>("setProjectThumb"),
   deleteProject: useMutation<[id: string], void>("deleteProject"),
   addLayer: useMutation<
@@ -26,10 +27,19 @@ export const api = {
     { layerId: string; assetId: string; src?: string }
   >("addLayer"),
   updateLayer: useMutation<[id: string, dataJson: string], void>("updateLayer"),
+  replaceLayerAsset: useMutation<
+    [id: string, src: string, width: number, height: number],
+    { assetId: string; src: string }
+  >("replaceLayerAsset"),
+  prepareAssetUpload: useMutation<
+    [projectId: string, contentType: string, width: number, height: number],
+    { assetId: string; uploadUrl: string; publicUrl: string }
+  >("prepareAssetUpload"),
   renameLayer: useMutation<[id: string, name: string], void>("renameLayer"),
   deleteLayer: useMutation<[id: string], void>("deleteLayer"),
   setLayerOrder: useMutation<[projectId: string, ids: string[]], void>("setLayerOrder"),
-  getAsset: useMutation<[id: string], AssetPayload>("getAsset")
+  getAsset: useMutation<[id: string], AssetPayload>("getAsset"),
+  getAssetPaint: useMutation<[id: string], PaintAssetPayload>("getAssetPaint")
 };
 
 /**

@@ -4,26 +4,23 @@
 import { useRef, useState } from "preact/hooks";
 import { cleanName, type Layer } from "../../shared/types";
 import {
-    applyTransient,
-    commitTransforms,
-    deleteSelection,
-    duplicateSelection,
+    addBlankLayer,
     renameLayer,
     reorderLayer,
     setSelection,
     toggleSelected,
     toggleVisible,
-    type TransformChange,
 } from "../state/actions";
-import { useAssetEntry } from "../state/assets";
-import { getState, useEditor } from "../state/store";
-import { FiCopy, FiEye, FiEyeOff, FiLayers, FiTrash2 } from "./Icons";
+import { useAssetEntry, displaySrc } from "../state/assets";
+import { useEditor } from "../state/store";
+import { FiEye, FiEyeOff, FiLayers, FiPlus } from "./Icons";
+import { PropertiesPanel } from "./PropertiesPanel";
 
 function LayerThumb({ layer }: { layer: Layer }) {
     const asset = useAssetEntry(layer.assetId);
     return (
         <span className="checker layer-thumb">
-            {asset ? <img alt="" src={asset.src} draggable={false} /> : null}
+            {asset ? <img alt="" src={displaySrc(asset)} draggable={false} /> : null}
         </span>
     );
 }
@@ -105,19 +102,16 @@ export function LayersPanel() {
     const doc = useEditor((s) => s.doc);
     const selection = useEditor((s) => s.selection);
     const [dropSlot, setDropSlot] = useState<number | null>(null);
+    const [panelWidth, setPanelWidth] = useState(() => Math.max(220, Math.min(420, Number(localStorage.getItem("image-editor-panel-width")) || 244)));
+    const [propertiesHeight, setPropertiesHeight] = useState(() => Math.max(150, Math.min(500, Number(localStorage.getItem("image-editor-properties-height")) || 230)));
     const dragFromRef = useRef<number | null>(null);
-    const opacityBeforeRef = useRef<TransformChange[] | null>(null);
+    const panelRef = useRef<HTMLElement>(null);
 
     if (!doc) return null;
 
     // Display order is top layer first; the doc stores bottom-first.
     const display = [...doc.layers].reverse();
     const count = doc.layers.length;
-    const selectedLayers = doc.layers.filter((l) => selection.includes(l.id));
-    const opacity =
-        selectedLayers.length > 0
-            ? selectedLayers[selectedLayers.length - 1].opacity
-            : 1;
 
     function slotFromEvent(e: DragEvent): number {
         const row = (e.target as HTMLElement).closest("[data-display-index]");
@@ -140,57 +134,40 @@ export function LayersPanel() {
         reorderLayer(count - 1 - from, count - 1 - adjusted);
     }
 
-    function onOpacityInput(event: Event) {
-        const value =
-            Number((event.currentTarget as HTMLInputElement).value) / 100;
-        const targets = getState().selection;
-        if (targets.length === 0) return;
-        if (!opacityBeforeRef.current) {
-            const layers = getState().doc?.layers ?? [];
-            opacityBeforeRef.current = layers
-                .filter((l) => targets.includes(l.id))
-                .map((l) => ({
-                    id: l.id,
-                    before: { opacity: l.opacity },
-                    after: { opacity: l.opacity },
-                }));
-        }
-        applyTransient(new Map(targets.map((id) => [id, { opacity: value }])));
-    }
-
-    function onOpacityCommit() {
-        const changes = opacityBeforeRef.current;
-        opacityBeforeRef.current = null;
-        if (!changes) return;
-        const layers = getState().doc?.layers ?? [];
-        for (const change of changes) {
-            const layer = layers.find((l) => l.id === change.id);
-            if (layer) change.after = { opacity: layer.opacity };
-        }
-        commitTransforms("Opacity", changes);
+    function startResize(kind: "width" | "properties", event: PointerEvent) {
+        event.preventDefault();
+        const panelTop = panelRef.current?.getBoundingClientRect().top ?? 0;
+        const onMove = (e: PointerEvent) => {
+            if (kind === "width") setPanelWidth(Math.max(220, Math.min(420, window.innerWidth - e.clientX)));
+            else setPropertiesHeight(Math.max(150, Math.min(window.innerHeight * 0.7, e.clientY - panelTop)));
+        };
+        const onUp = (e: PointerEvent) => {
+            onMove(e);
+            document.removeEventListener("pointermove", onMove);
+            document.removeEventListener("pointerup", onUp);
+            if (kind === "width") localStorage.setItem("image-editor-panel-width", String(Math.max(220, Math.min(420, window.innerWidth - e.clientX))));
+            if (kind === "properties") localStorage.setItem("image-editor-properties-height", String(Math.max(150, Math.min(window.innerHeight * 0.7, e.clientY - panelTop))));
+        };
+        document.addEventListener("pointermove", onMove);
+        document.addEventListener("pointerup", onUp);
     }
 
     return (
-        <aside className="layers-panel">
-            <div
-                className={`opacity-control ${selectedLayers.length === 0 ? "disabled" : ""}`}
-                style={{ "--progress": `${Math.round(opacity * 100)}%` } as Record<string, string>}
-            >
-                <div className="opacity-label">
-                    <span>Opacity</span>
-                    <span className="tabular-nums">
-                        {Math.round(opacity * 100)}%
-                    </span>
-                </div>
-                <input
-                    type="range"
-                    min={0}
-                    max={100}
-                    value={Math.round(opacity * 100)}
-                    disabled={selectedLayers.length === 0}
-                    onInput={onOpacityInput}
-                    onChange={onOpacityCommit}
-                />
+        <aside ref={panelRef} className="layers-panel" style={{ width: panelWidth }}>
+            <div className="panel-width-resizer" onPointerDown={(e: PointerEvent) => startResize("width", e)} />
+            <PropertiesPanel height={propertiesHeight} />
+            <div className="properties-resizer" onPointerDown={(e: PointerEvent) => startResize("properties", e)} />
+            <div className="panel-head layers-head">
+                <FiLayers />
+                <span>Layers</span>
+                <button
+                    type="button"
+                    title="New layer"
+                    className="layer-add"
+                    onClick={() => addBlankLayer()}
+                >
+                    <FiPlus />
+                </button>
             </div>
 
             <ul
@@ -224,29 +201,6 @@ export function LayersPanel() {
                     <li className="no-layers">No layers yet.</li>
                 ) : null}
             </ul>
-
-            <div className="panel-actions">
-                <button
-                    type="button"
-                    disabled={selectedLayers.length === 0}
-                    onClick={duplicateSelection}
-                    title="Duplicate (⌘D)"
-                    className="button"
-                >
-                    <FiCopy />
-                    Duplicate
-                </button>
-                <button
-                    type="button"
-                    disabled={selectedLayers.length === 0}
-                    onClick={deleteSelection}
-                    title="Delete (⌫)"
-                    className="button danger"
-                >
-                    <FiTrash2 />
-                    Delete
-                </button>
-            </div>
         </aside>
     );
 }

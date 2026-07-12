@@ -1,9 +1,11 @@
-// Minimal S3 PutObject via Signature V4 + fetch (no AWS SDK).
-// Uploads image data URLs and returns a CloudFront URL for the object.
-// Objects land under the image-editor/ prefix in the bucket.
+// Minimal S3 helpers via Signature V4 (no AWS SDK).
+// Large images POST to /assets/upload; the server PutObjects with
+// UNSIGNED-PAYLOAD. Tiny assets may still be stored as inline data URLs.
 
 import type { ServerContext } from "lakebed/server";
+import { MAX_INLINE_SRC_BYTES } from "../shared/types";
 
+export { MAX_INLINE_SRC_BYTES };
 export const CLOUD_FRONT_URL = "https://d2p6q917mww4yf.cloudfront.net";
 const KEY_PREFIX = "image-editor";
 
@@ -33,9 +35,10 @@ async function hmac(key: ArrayBuffer | Uint8Array, data: string): Promise<ArrayB
   return crypto.subtle.sign("HMAC", cryptoKey, encoder.encode(data));
 }
 
-/** AWS SigV4 URI encode (path segment). */
-function uriEncode(value: string): string {
-  return encodeURIComponent(value).replace(/[!'()*]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
+/** AWS SigV4 URI encode (path segment / query). */
+function uriEncode(value: string, encodeSlash = true): string {
+  const encoded = encodeURIComponent(value).replace(/[!'()*]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
+  return encodeSlash ? encoded : encoded.replace(/%2F/gi, "/");
 }
 
 /** Keep S3 keys URL-safe — guest ids like "guest:local" break unsigned paths. */
@@ -46,6 +49,14 @@ function safeSegment(value: string): string {
     .replace(/^_|_$/g, "")
     .slice(0, 80);
   return cleaned || "x";
+}
+
+function contentTypeExt(contentType: string): string {
+  const type = contentType.toLowerCase();
+  if (type === "image/jpeg" || type === "image/jpg") return "jpg";
+  if (type === "image/webp") return "webp";
+  if (type === "image/gif") return "gif";
+  return "png";
 }
 
 function decodeDataUrl(src: string): { contentType: string; body: Uint8Array; ext: string } {
@@ -59,15 +70,7 @@ function decodeDataUrl(src: string): { contentType: string; body: Uint8Array; ex
   for (let i = 0; i < binary.length; i += 1) {
     body[i] = binary.charCodeAt(i);
   }
-  const ext =
-    contentType === "image/jpeg" || contentType === "image/jpg"
-      ? "jpg"
-      : contentType === "image/webp"
-        ? "webp"
-        : contentType === "image/gif"
-          ? "gif"
-          : "png";
-  return { contentType, body, ext };
+  return { contentType, body, ext: contentTypeExt(contentType) };
 }
 
 function amzDate(now: Date): { amzDate: string; dateStamp: string } {
@@ -84,30 +87,106 @@ function objectKey(userId: string, projectId: string, ext: string): string {
 }
 
 function canonicalUri(key: string): string {
-  return `/${key.split("/").map(uriEncode).join("/")}`;
+  return `/${key.split("/").map((part) => uriEncode(part)).join("/")}`;
 }
 
-/** Upload a data-URL image to S3; returns the public CloudFront URL. */
-export async function uploadImageDataUrl(
-  ctx: ServerContext,
-  projectId: string,
-  src: string
-): Promise<string> {
+function awsConfig(ctx: ServerContext) {
   const accessKey = requireEnv(ctx, "AWS_ACCESS_KEY_ID");
   const secretKey = requireEnv(ctx, "AWS_SECRET_ACCESS_KEY");
   const bucket = requireEnv(ctx, "AWS_BUCKET");
   const region = typeof ctx.env.AWS_REGION === "string" && ctx.env.AWS_REGION ? ctx.env.AWS_REGION : "us-east-2";
+  return { accessKey, secretKey, bucket, region };
+}
 
-  const { contentType, body, ext } = decodeDataUrl(src);
-  const key = objectKey(ctx.auth.userId, projectId, ext);
+export function hasAwsEnv(ctx: ServerContext): boolean {
+  return (
+    typeof ctx.env.AWS_ACCESS_KEY_ID === "string" &&
+    !!ctx.env.AWS_ACCESS_KEY_ID &&
+    typeof ctx.env.AWS_SECRET_ACCESS_KEY === "string" &&
+    !!ctx.env.AWS_SECRET_ACCESS_KEY &&
+    typeof ctx.env.AWS_BUCKET === "string" &&
+    !!ctx.env.AWS_BUCKET
+  );
+}
+
+async function signingKey(secretKey: string, dateStamp: string, region: string): Promise<ArrayBuffer> {
+  const kDate = await hmac(encoder.encode(`AWS4${secretKey}`), dateStamp);
+  const kRegion = await hmac(kDate, region);
+  const kService = await hmac(kRegion, "s3");
+  return hmac(kService, "aws4_request");
+}
+
+/** Browser uploads directly to S3; server only signs (no image bytes on Lakebed). */
+export async function createPresignedPut(
+  ctx: ServerContext,
+  projectId: string,
+  contentType: string
+): Promise<{ uploadUrl: string; publicUrl: string; key: string }> {
+  const type = String(contentType || "").toLowerCase();
+  if (!type.startsWith("image/")) throw new Error("Content type must be an image");
+
+  const { accessKey, secretKey, bucket, region } = awsConfig(ctx);
+  const key = objectKey(ctx.auth.userId, projectId, contentTypeExt(type));
+  const host = `${bucket}.s3.${region}.amazonaws.com`;
+  const uri = canonicalUri(key);
+  const { amzDate: amz, dateStamp } = amzDate(new Date());
+  const expires = 900;
+  const credential = `${accessKey}/${dateStamp}/${region}/s3/aws4_request`;
+
+  const query: Record<string, string> = {
+    "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+    "X-Amz-Credential": credential,
+    "X-Amz-Date": amz,
+    "X-Amz-Expires": String(expires),
+    "X-Amz-SignedHeaders": "content-type;host",
+    "X-Amz-Content-Sha256": "UNSIGNED-PAYLOAD"
+  };
+  const canonicalQuery = Object.keys(query)
+    .sort()
+    .map((k) => `${uriEncode(k)}=${uriEncode(query[k])}`)
+    .join("&");
+
+  const canonicalHeaders = `content-type:${type}\nhost:${host}\n`;
+  const canonicalRequest = [
+    "PUT",
+    uri,
+    canonicalQuery,
+    canonicalHeaders,
+    "content-type;host",
+    "UNSIGNED-PAYLOAD"
+  ].join("\n");
+
+  const credentialScope = `${dateStamp}/${region}/s3/aws4_request`;
+  const stringToSign = ["AWS4-HMAC-SHA256", amz, credentialScope, await sha256Hex(canonicalRequest)].join(
+    "\n"
+  );
+  const signature = toHex(await hmac(await signingKey(secretKey, dateStamp, region), stringToSign));
+  const uploadUrl = `https://${host}${uri}?${canonicalQuery}&X-Amz-Signature=${signature}`;
+  return { uploadUrl, publicUrl: `${CLOUD_FRONT_URL}/${key}`, key };
+}
+
+/** Server-side PutObject with UNSIGNED-PAYLOAD (no body hash — safe for large files). */
+export async function putObjectBytes(
+  ctx: ServerContext,
+  projectId: string,
+  contentType: string,
+  body: Uint8Array
+): Promise<string> {
+  const type = String(contentType || "").toLowerCase();
+  if (!type.startsWith("image/")) throw new Error("Content type must be an image");
+  if (body.byteLength < 1) throw new Error("Empty image body");
+  if (body.byteLength > 12_000_000) throw new Error("Image is too large");
+
+  const { accessKey, secretKey, bucket, region } = awsConfig(ctx);
+  const key = objectKey(ctx.auth.userId, projectId, contentTypeExt(type));
   const host = `${bucket}.s3.${region}.amazonaws.com`;
   const uri = canonicalUri(key);
   const url = `https://${host}${uri}`;
   const { amzDate: amz, dateStamp } = amzDate(new Date());
-  const payloadHash = await sha256Hex(body);
+  const payloadHash = "UNSIGNED-PAYLOAD";
 
   const canonicalHeaders =
-    `content-type:${contentType}\n` +
+    `content-type:${type}\n` +
     `host:${host}\n` +
     `x-amz-content-sha256:${payloadHash}\n` +
     `x-amz-date:${amz}\n`;
@@ -118,23 +197,17 @@ export async function uploadImageDataUrl(
   const stringToSign = ["AWS4-HMAC-SHA256", amz, credentialScope, await sha256Hex(canonicalRequest)].join(
     "\n"
   );
-
-  const kDate = await hmac(encoder.encode(`AWS4${secretKey}`), dateStamp);
-  const kRegion = await hmac(kDate, region);
-  const kService = await hmac(kRegion, "s3");
-  const kSigning = await hmac(kService, "aws4_request");
-  const signature = toHex(await hmac(kSigning, stringToSign));
-
+  const signature = toHex(await hmac(await signingKey(secretKey, dateStamp, region), stringToSign));
   const authorization =
     `AWS4-HMAC-SHA256 Credential=${accessKey}/${credentialScope}, ` +
     `SignedHeaders=${signedHeaders}, Signature=${signature}`;
 
-  ctx.log.info("Uploading image to S3", { key, bytes: body.byteLength, contentType });
+  ctx.log.info("Uploading image to S3", { key, bytes: body.byteLength, contentType: type });
 
   const response = await fetch(url, {
     method: "PUT",
     headers: {
-      "Content-Type": contentType,
+      "Content-Type": type,
       "x-amz-content-sha256": payloadHash,
       "x-amz-date": amz,
       Authorization: authorization
@@ -152,3 +225,17 @@ export async function uploadImageDataUrl(
   ctx.log.info("S3 upload ok", { url: publicUrl });
   return publicUrl;
 }
+
+/** Server-side upload for small data URLs only (blank layers / tiny images). */
+export async function uploadImageDataUrl(
+  ctx: ServerContext,
+  projectId: string,
+  src: string
+): Promise<string> {
+  const { contentType, body } = decodeDataUrl(src);
+  if (body.byteLength > MAX_INLINE_SRC_BYTES) {
+    throw new Error("Image is too large for server upload; use /assets/upload");
+  }
+  return putObjectBytes(ctx, projectId, contentType, body);
+}
+

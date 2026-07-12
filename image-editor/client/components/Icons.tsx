@@ -44,3 +44,6 @@ export const FiSun = (props: IconProps) => <Icon {...props}><circle cx="12" cy="
 export const FiTrash2 = (props: IconProps) => <Icon {...props}><path d="M3 6h18M8 6V4h8v2m3 0-1 15H6L5 6m5 4v7m4-7v7" /></Icon>;
 export const FiUndo2 = (props: IconProps) => <Icon {...props}><path d="M9 4 4 9l5 5" /><path d="M4 9h9a7 7 0 0 1 7 7v1" /></Icon>;
 export const FiUpload = (props: IconProps) => <Icon {...props}><path d="M12 15V3m-4 4 4-4 4 4M4 14v6h16v-6" /></Icon>;
+export const FiBrush = (props: IconProps) => <Icon {...props}><path d="m14.5 4.5 5 5L10 19H5v-5Z" /><path d="m12 7 5 5M5 19c-1.5 0-2.5 1-2.5 2" /></Icon>;
+export const FiCrop = (props: IconProps) => <Icon {...props}><path d="M6 2v14a2 2 0 0 0 2 2h14M2 6h14a2 2 0 0 1 2 2v14" /></Icon>;
+export const FiType = (props: IconProps) => <Icon {...props}><path d="M4 5V3h16v2M9 21h6M12 3v18" /></Icon>;

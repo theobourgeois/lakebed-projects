@@ -14,6 +14,8 @@ import {
 import { fileToImportedImage, imageFilesFromDataTransfer } from "../lib/image";
 import { api, queryResult } from "../state/api";
 import { seedAsset } from "../state/assets";
+import { newClientId } from "../state/persist";
+import { compactThumbDataUrl, ensureRemoteAsset } from "../state/upload";
 import { FiEdit3, FiImage, FiPlus, FiTrash2, FiUpload } from "./Icons";
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -137,6 +139,8 @@ export function Home() {
         setBusy(true);
         try {
             const image = await fileToImportedImage(file);
+            const { id } = await api.createProject(image.name, image.width, image.height);
+            const remote = await ensureRemoteAsset(id, image.src, image.width, image.height);
             const transform = encodeTransform({
                 x: 0,
                 y: 0,
@@ -145,23 +149,24 @@ export function Home() {
                 rotation: 0,
                 opacity: 1,
                 visible: true,
+                flipX: false,
+                blendMode: "normal",
             });
-            const result = await api.createProjectFromImage(
+            const layer = await api.addLayer(
+                id,
+                newClientId("key"),
                 image.name,
-                image.width,
-                image.height,
-                image.name,
-                image.src,
                 transform,
+                remote.assetId
+                    ? { assetId: remote.assetId }
+                    : { src: remote.src, width: remote.width, height: remote.height },
             );
-            seedAsset(result.assetId, {
-                src: result.src || image.src,
+            seedAsset(layer.assetId, {
+                src: layer.src || remote.src || image.src,
                 paintSrc: image.src,
                 width: image.width,
                 height: image.height,
             });
-            // Home never opens the editor long enough for the delayed thumb
-            // pass — write one now from the local data URL.
             try {
                 const scale = Math.min(1, 360 / Math.max(image.width, image.height));
                 const canvas = document.createElement("canvas");
@@ -176,17 +181,18 @@ export function Home() {
                         img.src = image.src;
                     });
                     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                    await api.setProjectThumb(result.id, canvas.toDataURL("image/jpeg", 0.85));
+                    await api.setProjectThumb(id, compactThumbDataUrl(canvas));
                 }
             } catch (thumbError) {
                 console.warn("Could not write project thumb:", thumbError);
-                if (result.src) {
-                    await api.setProjectThumb(result.id, result.src).catch(() => undefined);
+                if (remote.src.startsWith("http")) {
+                    await api.setProjectThumb(id, remote.src).catch(() => undefined);
                 }
             }
-            navigate(`/p/${result.id}`);
+            navigate(`/p/${id}`);
         } catch (error) {
             console.error("Could not create project from image:", error);
+            window.alert(error instanceof Error ? error.message : "Could not create project from image");
         } finally {
             setBusy(false);
         }

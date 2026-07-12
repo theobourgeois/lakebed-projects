@@ -210,7 +210,19 @@ function publicDeploy(meta) {
   };
 }
 
-async function writeDeployDomains(dir, domains) {
+function parseDeployOutput(lines) {
+  let url = null;
+  let deployId = null;
+  for (const line of lines || []) {
+    const app = String(line).match(/^App(?:\s*URL)?:\s+(\S+)/i);
+    if (app) url = app[1];
+    const inspect = String(line).match(/\binspect\s+(dep_\w+)/i);
+    if (inspect) deployId = inspect[1];
+  }
+  return { url, deployId };
+}
+
+async function writeDeployMeta(dir, patch) {
   const file = deployMetaPath(dir);
   let existing = {};
   try {
@@ -220,16 +232,31 @@ async function writeDeployDomains(dir, domains) {
       const binding = JSON.parse(await fsp.readFile(path.join(dir, "lakebed.json"), "utf8"));
       existing = { deployId: binding.deployId || null };
     } catch {
-      return;
+      if (!patch.deployId && !patch.url) return;
     }
   }
   const next = {
     ...existing,
-    domains,
+    ...patch,
     updatedAt: new Date().toISOString(),
   };
   await fsp.mkdir(path.dirname(file), { recursive: true });
   await fsp.writeFile(file, `${JSON.stringify(next, null, 2)}\n`);
+}
+
+async function writeDeployDomains(dir, domains) {
+  await writeDeployMeta(dir, { domains });
+}
+
+async function captureDeployFromJob(dir, job) {
+  if (!job?.ok || job.kind !== "deploy") return null;
+  const parsed = parseDeployOutput(job.lines);
+  if (!parsed.url && !parsed.deployId) return null;
+  const patch = {};
+  if (parsed.url) patch.url = parsed.url;
+  if (parsed.deployId) patch.deployId = parsed.deployId;
+  await writeDeployMeta(dir, patch);
+  return parsed;
 }
 
 // name -> last sync attempt ms
@@ -238,8 +265,9 @@ const DOMAIN_SYNC_TTL_MS = 60_000;
 
 function scheduleDomainSync(name, dir, meta) {
   if (!meta?.deployId) return;
-  // Skip if we already have domains cached locally.
-  if (Array.isArray(meta.domains) && meta.domains.length > 0) return;
+  // Claimed deploys only persist deployId in lakebed.json. Once we have the
+  // App URL locally, stop polling inspect.
+  if (meta.url) return;
   const last = domainSyncAt.get(name) || 0;
   if (Date.now() - last < DOMAIN_SYNC_TTL_MS) return;
   domainSyncAt.set(name, Date.now());
@@ -250,7 +278,12 @@ function scheduleDomainSync(name, dir, meta) {
     (err, stdout) => {
       if (err) return;
       try {
-        const manifest = JSON.parse(stdout);
+        // npx may print warnings on stderr; stdout should be JSON. Tolerate a
+        // leading warning line by locating the first `{`.
+        const text = String(stdout);
+        const start = text.indexOf("{");
+        if (start < 0) return;
+        const manifest = JSON.parse(text.slice(start));
         const domains = Array.isArray(manifest.domains)
           ? manifest.domains.map((d) => ({
               hostname: d.hostname,
@@ -259,8 +292,12 @@ function scheduleDomainSync(name, dir, meta) {
               status: d.status || null,
             })).filter((d) => d.hostname && d.url)
           : [];
-        if (!domains.length) return;
-        writeDeployDomains(dir, domains).catch(() => {});
+        const patch = {};
+        if (manifest.url) patch.url = manifest.url;
+        if (manifest.deployId) patch.deployId = manifest.deployId;
+        if (domains.length) patch.domains = domains;
+        if (!Object.keys(patch).length) return;
+        writeDeployMeta(dir, patch).catch(() => {});
       } catch {}
     },
   );
@@ -272,13 +309,20 @@ async function listProjects() {
   for (const e of entries) {
     if (!e.isDirectory() || e.name.startsWith(".") || e.name === SELF) continue;
     const dir = path.join(ROOT, e.name);
-    const meta = await readDeployMeta(dir);
+    let meta = await readDeployMeta(dir);
+    const job = jobs.get(e.name);
+    // Claimed deploys only persist deployId; recover the App URL from the last job log.
+    if ((!meta?.url) && job?.done && job.ok && job.kind === "deploy") {
+      try {
+        const parsed = await captureDeployFromJob(dir, job);
+        if (parsed?.url) meta = await readDeployMeta(dir);
+      } catch {}
+    }
     if (meta) scheduleDomainSync(e.name, dir, meta);
     const deploy = publicDeploy(meta);
     let mtime = 0;
     try { mtime = (await fsp.stat(dir)).mtimeMs; } catch {}
     const dev = devs.get(e.name);
-    const job = jobs.get(e.name);
     projects.push({
       name: e.name,
       deploy,
@@ -326,6 +370,10 @@ function runJob(name, kind, args, cwd) {
     job.done = true;
     job.ok = code === 0;
     pushLine(job.lines, code === 0 ? "✓ done" : `✗ exited with code ${code}`);
+    if (code === 0 && kind === "deploy") {
+      captureDeployFromJob(cwd, job).catch(() => {});
+      domainSyncAt.delete(name);
+    }
     if (code === 0 && kind === "domain") {
       const hostname = args.find((a) => typeof a === "string" && a.endsWith(".lakebed.app"));
       if (hostname) {
