@@ -373,25 +373,6 @@ void main() {
   float t = u_time;
   float chromaAmt = u_chroma;
 
-  // Cursor field
-  if (u_pointer_active > 0.5 && u_pointer_force > 0.003) {
-    vec2 pn = (u_pointer - 0.5) * aspect;
-    vec2 d = n - pn;
-    float sz = max(u_pointer_size * 0.8, 0.04);
-    float infl = exp(-dot(d, d) / (sz * sz)) * u_pointer_force * (0.55 + 0.45 * u_pointer_down);
-    if (u_pointer_mode < 0.5) {
-      n = pn + rot2(infl * 2.6) * d;
-    } else if (u_pointer_mode < 1.5) {
-      n -= d * infl * 0.55;
-    } else if (u_pointer_mode < 2.5) {
-      chromaAmt += infl * 1.4;
-      n += d * infl * 0.3;
-    } else {
-      n.y += infl * 0.3 * (0.55 + 0.45 * sin(t * 2.0 + n.x * 12.0));
-    }
-    n += u_pointer_vel * infl * 1.6;
-  }
-
   // Space
   n *= 1.0 - u_zoom * (0.3 + 0.1 * sin(t * 0.7)) - u_audio * u_zoom * 0.15;
   if (u_swirl > 0.003) {

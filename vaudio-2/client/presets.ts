@@ -9,7 +9,7 @@ import {
   type BlendMode,
   type GlobalFx,
   type LayerFx,
-} from "./types";
+} from "../shared/types";
 
 function look(overrides: Partial<GlobalFx>): GlobalFx {
   return { ...DEFAULT_GLOBAL_FX, ...overrides };

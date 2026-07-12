@@ -5,8 +5,26 @@ export const SCENE_DATA_LIMIT = 60_000;
 export const THUMB_LIMIT = 60_000;
 export const MAX_LAYERS = 12;
 
-export const MEDIA_KINDS = ["image", "video", "audio", "data"] as const;
+export const MEDIA_KINDS = ["image", "video", "audio", "data", "camera", "mic"] as const;
 export type MediaKind = (typeof MEDIA_KINDS)[number];
+
+/** Live sources capture from the device instead of an IndexedDB blob. */
+export function isLiveKind(kind: MediaKind): kind is "camera" | "mic" {
+  return kind === "camera" || kind === "mic";
+}
+
+export const AUDIO_VISUAL_IDS = [
+  "classic",
+  "bars",
+  "radial",
+  "tunnel",
+  "lattice",
+  "ribbons",
+  "bloom",
+  "shards",
+  "plasma",
+] as const;
+export type AudioVisualId = (typeof AUDIO_VISUAL_IDS)[number];
 
 export const BLEND_MODES = [
   "normal",
@@ -77,6 +95,10 @@ export type SceneLayer = {
   name: string;
   /** How the IndexedDB blob should be decoded / played. Defaults to image. */
   mediaKind: MediaKind;
+  /** Visualizer style for audio-driven layers (audio files, mic line). */
+  visual?: AudioVisualId;
+  /** Capture device for live layers; empty/absent means the default device. */
+  deviceId?: string;
   fx: LayerFx;
 };
 
@@ -305,6 +327,12 @@ export function sanitizeScene(input: unknown): Scene {
         mediaKind: MEDIA_KINDS.includes(l.mediaKind as MediaKind)
           ? (l.mediaKind as MediaKind)
           : "image",
+        ...(AUDIO_VISUAL_IDS.includes(l.visual as AudioVisualId)
+          ? { visual: l.visual as AudioVisualId }
+          : {}),
+        ...(typeof l.deviceId === "string" && l.deviceId
+          ? { deviceId: l.deviceId.slice(0, 120) }
+          : {}),
         fx: sanitizeLayerFx(l.fx),
       })),
     global: sanitizeGlobalFx(raw.global),
