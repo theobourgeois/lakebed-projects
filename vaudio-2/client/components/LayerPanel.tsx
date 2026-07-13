@@ -1,11 +1,16 @@
 import { useEffect, useRef } from "preact/hooks";
 import {
     AUDIO_VISUAL_IDS,
+    AUDIO_MAP_PREVIEWS,
+    DEFAULT_AUDIO_MAP,
+    DEFAULT_AUDIO_VISUAL_SETTINGS,
     BLEND_MODES,
     DEFAULT_MOTION,
     GENERATOR_IDS,
     TILE_MODES,
     type AudioVisualId,
+    type AudioVisualSettings,
+    type AudioMapSettings,
     type BlendMode,
     type CameraModeId,
     type GeneratorId,
@@ -39,6 +44,7 @@ const VISUAL_OPTIONS = AUDIO_VISUAL_IDS.map((id) => ({
     value: id,
     label: AUDIO_VISUAL_LABELS[id],
 }));
+const AUDIO_MAP_PREVIEW_LABELS = ["Hidden", "Dim"];
 const GENERATOR_OPTIONS = GENERATOR_IDS.map((id) => ({
     value: id,
     label: id[0].toUpperCase() + id.slice(1),
@@ -89,6 +95,8 @@ export function LayerPanel(props: {
     onPatch: (patch: Partial<LayerFx>) => void;
     onReplaceFx: (fx: LayerFx) => void;
     onSetVisual: (visual: AudioVisualId) => void;
+    onSetVisualSettings: (settings: AudioVisualSettings) => void;
+    onSetAudioMap: (settings: AudioMapSettings | undefined) => void;
     onSetGenerator: (patch: Partial<GeneratorSettings>) => void;
     onSetMotion: (patch: Partial<MotionSettings>) => void;
     onSetCameraMode: (mode: CameraModeOption) => void;
@@ -97,6 +105,9 @@ export function LayerPanel(props: {
     const fx = layer.fx;
     const audioDriven =
         layer.mediaKind === "mic" || layer.mediaKind === "audio";
+    const visual = layer.visual ?? "classic";
+    const visualSettings =
+        layer.visualSettings?.[visual] ?? DEFAULT_AUDIO_VISUAL_SETTINGS;
     const motionSettings = layer.motion ?? DEFAULT_MOTION;
     const cameraMode: CameraModeOption = layer.motion?.mode ?? "live";
     const sliderLabels =
@@ -165,25 +176,142 @@ export function LayerPanel(props: {
                     </div>
                 )}
                 {audioDriven && (
-                    <div class="px-3 py-[5px]">
-                        <div class="mb-1 flex items-center text-[9px] uppercase tracking-[0.14em] text-[var(--mute)]">
-                            Visualizer
-                            <span class="flex-1" />
-                            <IconButton
-                                title="Random visualizer"
-                                onClick={() =>
-                                    props.onSetVisual(
-                                        randomAudioVisual(layer.visual),
-                                    )
-                                }
-                            >
-                                <IDice class="h-3 w-3" />
-                            </IconButton>
+                    <div class="border-b border-[var(--line)] py-1">
+                        <Segmented
+                            label="Audio layer"
+                            options={["Visual", "Map"]}
+                            value={layer.audioMap ? 1 : 0}
+                            onChange={(index) =>
+                                props.onSetAudioMap(
+                                    index === 1 ? { ...DEFAULT_AUDIO_MAP } : undefined,
+                                )
+                            }
+                        />
+                        {layer.audioMap && (
+                            <>
+                                <Slider
+                                    label="Amount"
+                                    value={layer.audioMap.amount}
+                                    def={DEFAULT_AUDIO_MAP.amount}
+                                    onChange={(amount) =>
+                                        props.onSetAudioMap({ ...layer.audioMap!, amount })
+                                    }
+                                />
+                                <Slider
+                                    label="Blur"
+                                    value={layer.audioMap.blur}
+                                    def={DEFAULT_AUDIO_MAP.blur}
+                                    onChange={(blur) =>
+                                        props.onSetAudioMap({ ...layer.audioMap!, blur })
+                                    }
+                                />
+                                <Segmented
+                                    label="Map imagery"
+                                    options={AUDIO_MAP_PREVIEW_LABELS}
+                                    value={AUDIO_MAP_PREVIEWS.indexOf(layer.audioMap.preview)}
+                                    onChange={(index) =>
+                                        props.onSetAudioMap({
+                                            ...layer.audioMap!,
+                                            preview: AUDIO_MAP_PREVIEWS[index] ?? "hidden",
+                                        })
+                                    }
+                                />
+                            </>
+                        )}
+                        <div class="px-3 py-[5px]">
+                            <div class="mb-1 flex items-center text-[9px] uppercase tracking-[0.14em] text-[var(--mute)]">
+                                {layer.audioMap ? "Map texture" : "Visualizer"}
+                                <span class="flex-1" />
+                                <IconButton
+                                    title="Random visualizer"
+                                    onClick={() =>
+                                        props.onSetVisual(
+                                            randomAudioVisual(layer.visual),
+                                        )
+                                    }
+                                >
+                                    <IDice class="h-3 w-3" />
+                                </IconButton>
+                            </div>
+                            <Select<AudioVisualId>
+                                value={visual}
+                                options={VISUAL_OPTIONS}
+                                onChange={(visual) => props.onSetVisual(visual)}
+                            />
+                            <div class="mt-2 flex items-center gap-2">
+                                <input
+                                    type="color"
+                                    value={visualSettings.colorA}
+                                    title="Primary visualizer color"
+                                    onInput={(event) =>
+                                        props.onSetVisualSettings({
+                                            ...visualSettings,
+                                            colorA: event.currentTarget.value,
+                                            colorize: visualSettings.colorize || 0.72,
+                                        })
+                                    }
+                                />
+                                <input
+                                    type="color"
+                                    value={visualSettings.colorB}
+                                    title="Secondary visualizer color"
+                                    onInput={(event) =>
+                                        props.onSetVisualSettings({
+                                            ...visualSettings,
+                                            colorB: event.currentTarget.value,
+                                            colorize: visualSettings.colorize || 0.72,
+                                        })
+                                    }
+                                />
+                                <span class="font-mono text-[8px] uppercase text-[var(--mute)]">
+                                    palette · {AUDIO_VISUAL_LABELS[visual]}
+                                </span>
+                            </div>
                         </div>
-                        <Select<AudioVisualId>
-                            value={layer.visual ?? "classic"}
-                            options={VISUAL_OPTIONS}
-                            onChange={(visual) => props.onSetVisual(visual)}
+                        <Slider
+                            label="Color mix"
+                            value={visualSettings.colorize}
+                            def={0}
+                            onChange={(colorize) =>
+                                props.onSetVisualSettings({ ...visualSettings, colorize })
+                            }
+                        />
+                        <Slider
+                            label="Energy"
+                            value={visualSettings.energy}
+                            min={0.25}
+                            max={2}
+                            def={1}
+                            format={formatX}
+                            onChange={(energy) =>
+                                props.onSetVisualSettings({ ...visualSettings, energy })
+                            }
+                        />
+                        <Slider
+                            label="Detail"
+                            value={visualSettings.detail}
+                            def={1}
+                            onChange={(detail) =>
+                                props.onSetVisualSettings({ ...visualSettings, detail })
+                            }
+                        />
+                        <Slider
+                            label="Motion"
+                            value={visualSettings.motion}
+                            max={2}
+                            def={1}
+                            format={formatX}
+                            onChange={(motion) =>
+                                props.onSetVisualSettings({ ...visualSettings, motion })
+                            }
+                        />
+                        <Slider
+                            label="Persistence"
+                            value={visualSettings.trails}
+                            def={1}
+                            onChange={(trails) =>
+                                props.onSetVisualSettings({ ...visualSettings, trails })
+                            }
                         />
                     </div>
                 )}

@@ -113,6 +113,10 @@ export function buildFrameState(args: {
                 tintAmount: fx.tintAmount,
                 shimmer: fx.shimmer,
                 seed,
+                mapEnabled: layer.audioMap ? 1 : 0,
+                mapAmount: layer.audioMap?.amount ?? 0,
+                mapBlur: layer.audioMap?.blur ?? 0,
+                mapPreview: layer.audioMap?.preview === "dim" ? 0.2 : 0,
             };
         });
 

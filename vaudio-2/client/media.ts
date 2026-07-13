@@ -1,4 +1,10 @@
-import { AUDIO_VISUAL_IDS, type AudioVisualId, type MediaKind } from "../shared/types";
+import {
+  AUDIO_VISUAL_IDS,
+  DEFAULT_AUDIO_VISUAL_SETTINGS,
+  type AudioVisualId,
+  type AudioVisualSettings,
+  type MediaKind,
+} from "../shared/types";
 
 const AUDIO_EXT = /\.(mp3|wav|ogg|m4a|aac|flac|opus|wma)$/i;
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg|avif|ico)$/i;
@@ -52,6 +58,7 @@ export const AUDIO_VISUAL_LABELS: Record<AudioVisualId, string> = {
   bloom: "Orb bloom",
   shards: "Hard shards",
   plasma: "Acid plasma",
+  lissajous: "Oscilloscope XY",
 };
 
 export function randomAudioVisual(exclude?: AudioVisualId): AudioVisualId {
@@ -463,6 +470,87 @@ function paintPlasma(
   }
 }
 
+/** Time-domain XY phase portrait: waveform against a delayed copy of itself. */
+function paintLissajous(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  waveform: Uint8Array | undefined,
+  level: number,
+  time: number,
+  detail: number,
+) {
+  fade(ctx, width, height, 0.12 + (1 - level) * 0.025);
+
+  const cx = width * 0.5;
+  const cy = height * 0.5;
+  const size = Math.min(width, height) * 0.43;
+  const samples = waveform?.length ?? 0;
+  let mean = 0;
+  let peak = 0;
+  if (waveform && samples) {
+    for (let i = 0; i < samples; i += 1) mean += waveform[i];
+    mean /= samples;
+    for (let i = 0; i < samples; i += 1) {
+      peak = Math.max(peak, Math.abs((waveform[i] - mean) / 128));
+    }
+  }
+
+  // A slowly shifting delay reveals changing phase relationships while still
+  // using the source's actual waveform. Auto gain keeps quiet material legible.
+  const delay = Math.max(
+    1,
+    Math.floor(samples * (0.18 + Math.sin(time * 0.19) * 0.055)),
+  );
+  const gain = Math.min(5.5, 0.9 / Math.max(peak, 0.08)) * (0.72 + level * 0.38);
+  const realSignal = !!waveform && samples > 1 && peak > 0.012;
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(Math.sin(time * 0.13) * 0.12);
+  ctx.beginPath();
+  const count = realSignal
+    ? Math.max(32, Math.floor(samples * (0.18 + detail * 0.82)))
+    : Math.max(44, Math.floor(80 + detail * 140));
+  for (let i = 0; i < count; i += 1) {
+    let x: number;
+    let y: number;
+    if (realSignal && waveform) {
+      const sampleIndex = Math.floor((i / Math.max(1, count - 1)) * (samples - 1));
+      x = ((waveform[sampleIndex] - mean) / 128) * gain;
+      y = ((waveform[(sampleIndex + delay) % samples] - mean) / 128) * gain;
+    } else {
+      const phase = (i / count) * Math.PI * 2;
+      x = Math.sin(phase * 2 + time * 0.7) * 0.34;
+      y = Math.sin(phase * 3 + time * 0.83 + 0.8) * 0.34;
+    }
+    const px = x * size;
+    const py = y * size;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  if (!realSignal) ctx.closePath();
+
+  const hue = (185 + time * 24 + level * 80) % 360;
+  ctx.globalCompositeOperation = "lighter";
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.shadowColor = `hsla(${hue} 100% 62% / 0.9)`;
+  ctx.shadowBlur = 18 + level * 24;
+  ctx.strokeStyle = `hsla(${hue} 100% 62% / ${0.2 + level * 0.22})`;
+  ctx.lineWidth = 8 + level * 5;
+  ctx.stroke();
+  ctx.shadowBlur = 8 + level * 12;
+  ctx.strokeStyle = `hsla(${(hue + 42) % 360} 95% 72% / ${0.55 + level * 0.35})`;
+  ctx.lineWidth = 2 + level * 2.2;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = `rgba(245, 250, 255, ${0.48 + level * 0.4})`;
+  ctx.lineWidth = 0.7 + level * 0.8;
+  ctx.stroke();
+  ctx.restore();
+}
+
 /** Muted bars + glow — the pre-visualizer default kept for old audio layers. */
 function paintClassic(
   ctx: CanvasRenderingContext2D,
@@ -499,6 +587,44 @@ function paintClassic(
   ctx.fill();
 }
 
+let styledSpectrum = new Uint8Array(128);
+
+function styleSpectrum(
+  spectrum: Uint8Array,
+  settings: AudioVisualSettings,
+): Uint8Array {
+  if (styledSpectrum.length !== spectrum.length) {
+    styledSpectrum = new Uint8Array(spectrum.length);
+  }
+  const group = Math.max(1, Math.round(1 + (1 - settings.detail) * 15));
+  for (let start = 0; start < spectrum.length; start += group) {
+    const end = Math.min(spectrum.length, start + group);
+    let total = 0;
+    for (let i = start; i < end; i += 1) total += spectrum[i];
+    const value = Math.min(255, Math.round((total / (end - start)) * settings.energy));
+    styledSpectrum.fill(value, start, end);
+  }
+  return styledSpectrum;
+}
+
+function applyAudioVisualLook(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  settings: AudioVisualSettings,
+) {
+  if (settings.colorize <= 0.001) return;
+  ctx.save();
+  const gradient = ctx.createLinearGradient(0, height, width, 0);
+  gradient.addColorStop(0, settings.colorA);
+  gradient.addColorStop(1, settings.colorB);
+  ctx.globalCompositeOperation = "color";
+  ctx.globalAlpha = settings.colorize;
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, width, height);
+  ctx.restore();
+}
+
 /** Reactive field used as the layer texture for audio files and the mic line. */
 export function paintAudioVisual(
   canvas: HTMLCanvasElement,
@@ -506,45 +632,67 @@ export function paintAudioVisual(
   level: number,
   time: number,
   visual?: AudioVisualId,
+  waveform?: Uint8Array,
+  customSettings?: AudioVisualSettings,
 ) {
   ensureSpectrumCanvas(canvas);
   const width = canvas.width;
   const height = canvas.height;
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
+  const settings = customSettings ?? DEFAULT_AUDIO_VISUAL_SETTINGS;
+  const bins = customSettings ? styleSpectrum(spectrum, settings) : spectrum;
+  const styledLevel = Math.min(1, level * settings.energy);
+  const styledTime = time * settings.motion;
+  if (settings.trails < 0.999) {
+    ctx.fillStyle = `rgba(6, 6, 10, ${(1 - settings.trails) * 0.78})`;
+    ctx.fillRect(0, 0, width, height);
+  }
 
   switch (visual) {
     case "classic":
-      paintClassic(ctx, width, height, spectrum, level, time);
+      paintClassic(ctx, width, height, bins, styledLevel, styledTime);
       break;
     case "bars":
-      paintBars(ctx, width, height, spectrum, level, time);
+      paintBars(ctx, width, height, bins, styledLevel, styledTime);
       break;
     case "radial":
-      paintRadial(ctx, width, height, spectrum, level, time);
+      paintRadial(ctx, width, height, bins, styledLevel, styledTime);
       break;
     case "tunnel":
-      paintTunnel(ctx, width, height, spectrum, level, time);
+      paintTunnel(ctx, width, height, bins, styledLevel, styledTime);
       break;
     case "lattice":
-      paintLattice(ctx, width, height, spectrum, level, time);
+      paintLattice(ctx, width, height, bins, styledLevel, styledTime);
       break;
     case "ribbons":
-      paintRibbons(ctx, width, height, spectrum, level, time);
+      paintRibbons(ctx, width, height, bins, styledLevel, styledTime);
       break;
     case "bloom":
-      paintBloom(ctx, width, height, spectrum, level, time);
+      paintBloom(ctx, width, height, bins, styledLevel, styledTime);
       break;
     case "shards":
-      paintShards(ctx, width, height, spectrum, level, time);
+      paintShards(ctx, width, height, bins, styledLevel, styledTime);
       break;
     case "plasma":
-      paintPlasma(ctx, width, height, spectrum, level, time);
+      paintPlasma(ctx, width, height, bins, styledLevel, styledTime);
+      break;
+    case "lissajous":
+      paintLissajous(
+        ctx,
+        width,
+        height,
+        waveform,
+        styledLevel,
+        styledTime,
+        settings.detail,
+      );
       break;
     default:
-      paintClassic(ctx, width, height, spectrum, level, time);
+      paintClassic(ctx, width, height, bins, styledLevel, styledTime);
       break;
   }
+  applyAudioVisualLook(ctx, width, height, settings);
 }
 
 export function canvasThumb(

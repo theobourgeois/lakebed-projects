@@ -10,6 +10,7 @@ import {
     decodeScene,
     encodeScene,
     type AudioVisualId,
+    type AudioVisualSettings,
     type CameraModeId,
     type GeneratorSettings,
     type GlobalFx,
@@ -240,6 +241,43 @@ export function App() {
         }));
     }
 
+    function updateLayerVisualSettings(
+        layerId: string,
+        settings: AudioVisualSettings,
+    ) {
+        setScene((previous) => ({
+            ...previous,
+            layers: previous.layers.map((layer) => {
+                if (layer.id !== layerId) return layer;
+                const visual = layer.visual ?? "classic";
+                return {
+                    ...layer,
+                    visualSettings: {
+                        ...layer.visualSettings,
+                        [visual]: settings,
+                    },
+                };
+            }),
+        }));
+    }
+
+    function updateLayerAudioMap(
+        layerId: string,
+        audioMap: SceneLayer["audioMap"],
+    ) {
+        setScene((previous) => ({
+            ...previous,
+            layers: previous.layers.map((layer) => {
+                if (layer.id !== layerId) return layer;
+                if (!audioMap) {
+                    const { audioMap: _removed, ...rest } = layer;
+                    return rest;
+                }
+                return { ...layer, audioMap };
+            }),
+        }));
+    }
+
     function updateGenerator(layerId: string, patch: Partial<GeneratorSettings>) {
         setScene((previous) => {
             const source = previous.layers.find((item) => item.id === layerId);
@@ -345,6 +383,10 @@ export function App() {
                 name: `${source.name} copy`,
                 mediaKind: source.mediaKind,
                 visual: source.visual,
+                visualSettings: source.visualSettings
+                    ? { ...source.visualSettings }
+                    : undefined,
+                audioMap: source.audioMap ? { ...source.audioMap } : undefined,
                 deviceId: source.deviceId,
                 generator: source.generator ? { ...source.generator } : undefined,
                 motion: source.motion ? { ...source.motion } : undefined,
@@ -1271,6 +1313,12 @@ export function App() {
                                 }
                                 onSetVisual={(visual) =>
                                     updateLayerVisual(selected.id, visual)
+                                }
+                                onSetVisualSettings={(settings) =>
+                                    updateLayerVisualSettings(selected.id, settings)
+                                }
+                                onSetAudioMap={(audioMap) =>
+                                    updateLayerAudioMap(selected.id, audioMap)
                                 }
                                 onSetGenerator={(patch) =>
                                     updateGenerator(selected.id, patch)

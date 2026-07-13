@@ -43,6 +43,10 @@ export type LayerRenderState = {
   tintAmount: number;
   shimmer: number;
   seed: number;
+  mapEnabled: number;
+  mapAmount: number;
+  mapBlur: number;
+  mapPreview: number;
 };
 
 export type GlobalRenderState = {
@@ -215,6 +219,10 @@ uniform vec3 u_tint;
 uniform float u_tint_amt;
 uniform float u_shimmer;
 uniform float u_seed;
+uniform float u_map_enabled;
+uniform float u_map_amount;
+uniform float u_map_blur;
+uniform float u_map_preview;
 
 vec2 tileUv(vec2 uv) {
   if (u_tile > 1.5) return abs(fract(uv * 0.5) * 2.0 - 1.0);
@@ -232,6 +240,18 @@ vec4 tap(vec2 uv) {
   vec4 s = texture2D(u_img, clamp(tileUv(uv), 0.0, 1.0));
   s.a *= tileMask(uv);
   return s;
+}
+
+float mapLuma(vec2 uv, vec2 radius) {
+  vec4 c = tap(uv);
+  vec4 xp = tap(uv + vec2(radius.x, 0.0));
+  vec4 xn = tap(uv - vec2(radius.x, 0.0));
+  vec4 yp = tap(uv + vec2(0.0, radius.y));
+  vec4 yn = tap(uv - vec2(0.0, radius.y));
+  float center = luma(c.rgb) * c.a * 0.36;
+  float sides = luma(xp.rgb) * xp.a + luma(xn.rgb) * xn.a
+    + luma(yp.rgb) * yp.a + luma(yn.rgb) * yn.a;
+  return center + sides * 0.16;
 }
 
 vec3 blendClipLum(vec3 c) {
@@ -384,9 +404,26 @@ void main() {
   col = mix(col, vec3(luma(col)) * u_tint * 2.1, u_tint_amt);
   col = clamp(col, 0.0, 1.5);
 
-  vec3 dest = texture2D(u_dest, v_uv).rgb;
+  vec3 dest;
+  if (u_map_enabled > 0.5 && u_map_amount > 0.0001) {
+    // Turn the painted texture into a softened height field. Its gradient
+    // offsets the already-composited scene, so only layers below this map move.
+    vec2 radius = u_img_texel * mix(1.0, 34.0, u_map_blur * u_map_blur);
+    vec2 stepUv = max(radius * 1.35, u_img_texel * 1.5);
+    float left = mapLuma(uv - vec2(stepUv.x, 0.0), radius);
+    float right = mapLuma(uv + vec2(stepUv.x, 0.0), radius);
+    float down = mapLuma(uv - vec2(0.0, stepUv.y), radius);
+    float up = mapLuma(uv + vec2(0.0, stepUv.y), radius);
+    vec2 field = vec2(right - left, up - down);
+    float mask = tileMask(uv);
+    vec2 sceneOffset = field * u_map_amount * 0.42 * mask / aspect;
+    dest = texture2D(u_dest, clamp(v_uv - sceneOffset, 0.0, 1.0)).rgb;
+  } else {
+    dest = texture2D(u_dest, v_uv).rgb;
+  }
   vec3 blended = clamp(blendPix(dest, col), 0.0, 1.0);
-  float a = clamp(alpha * u_opacity * (1.0 + u_audio * 0.0), 0.0, 1.0);
+  float imageOpacity = u_map_enabled > 0.5 ? u_map_preview : 1.0;
+  float a = clamp(alpha * u_opacity * imageOpacity * (1.0 + u_audio * 0.0), 0.0, 1.0);
   gl_FragColor = vec4(mix(dest, blended, a), 1.0);
 }
 `;
@@ -758,6 +795,10 @@ export function createEngine(canvas: HTMLCanvasElement): EngineHandle {
       u1(layerProgram, "u_tint_amt", layer.tintAmount);
       u1(layerProgram, "u_shimmer", layer.shimmer);
       u1(layerProgram, "u_seed", layer.seed);
+      u1(layerProgram, "u_map_enabled", layer.mapEnabled);
+      u1(layerProgram, "u_map_amount", layer.mapAmount);
+      u1(layerProgram, "u_map_blur", layer.mapBlur);
+      u1(layerProgram, "u_map_preview", layer.mapPreview);
       drawQuad();
       const swap = source;
       source = dest;

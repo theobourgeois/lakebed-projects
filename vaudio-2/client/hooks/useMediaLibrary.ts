@@ -7,6 +7,7 @@ import {
     cleanName,
     isLiveKind,
     type AudioVisualId,
+    type AudioVisualSettings,
     type GeneratorId,
     type GeneratorSettings,
     type MediaKind,
@@ -42,6 +43,7 @@ export type MediaRuntime = {
     analyser?: AnalyserNode;
     sourceNode?: MediaElementAudioSourceNode;
     spectrum?: Uint8Array;
+    waveform?: Uint8Array;
     /** Device capture backing camera / mic layers. */
     stream?: MediaStream;
     streamSourceNode?: MediaStreamAudioSourceNode;
@@ -282,6 +284,7 @@ export function useMediaLibrary(deps: {
             analyser,
             sourceNode,
             spectrum: new Uint8Array(analyser.frequencyBinCount),
+            waveform: new Uint8Array(analyser.fftSize),
         });
         void audio.play().catch(() => undefined);
 
@@ -386,6 +389,7 @@ export function useMediaLibrary(deps: {
             analyser,
             streamSourceNode,
             spectrum: new Uint8Array(analyser.frequencyBinCount),
+            waveform: new Uint8Array(analyser.fftSize),
         });
         return {
             width: canvas.width,
@@ -698,6 +702,12 @@ export function useMediaLibrary(deps: {
         const visualFor = (imageId: string): AudioVisualId | undefined => {
             return layerFor(imageId)?.visual;
         };
+        const visualSettingsFor = (
+            imageId: string,
+            visual: AudioVisualId | undefined,
+        ): AudioVisualSettings | undefined => {
+            return visual ? layerFor(imageId)?.visualSettings?.[visual] : undefined;
+        };
         for (const [imageId, runtime] of mediaRuntimesRef.current) {
             if (runtime.kind === "generator" && runtime.canvas) {
                 const luma = paintGenerator(
@@ -778,6 +788,16 @@ export function useMediaLibrary(deps: {
                         : new Uint8Array(runtime.analyser.frequencyBinCount);
                 runtime.spectrum = spectrum;
                 runtime.analyser.getByteFrequencyData(spectrum);
+                const visual = visualFor(imageId);
+                let waveform: Uint8Array | undefined;
+                if (visual === "lissajous") {
+                    waveform =
+                        runtime.waveform?.length === runtime.analyser.fftSize
+                            ? runtime.waveform
+                            : new Uint8Array(runtime.analyser.fftSize);
+                    runtime.waveform = waveform;
+                    runtime.analyser.getByteTimeDomainData(waveform);
+                }
                 let level = levelFromSpectrum(spectrum);
                 mediaLevel = Math.max(mediaLevel, level);
                 signalsRef.current[imageId] = { level, luma: level, motion: level };
@@ -793,7 +813,9 @@ export function useMediaLibrary(deps: {
                     bins,
                     level,
                     time,
-                    visualFor(imageId),
+                    visual,
+                    waveform,
+                    visualSettingsFor(imageId, visual),
                 );
                 engine.setImage(imageId, runtime.canvas);
             }

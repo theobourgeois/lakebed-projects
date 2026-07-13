@@ -108,8 +108,51 @@ export const AUDIO_VISUAL_IDS = [
   "bloom",
   "shards",
   "plasma",
+  "lissajous",
 ] as const;
 export type AudioVisualId = (typeof AUDIO_VISUAL_IDS)[number];
+
+export type AudioVisualSettings = {
+  colorA: string;
+  colorB: string;
+  /** Strength of the two-color remap, 0 preserves the visual's native palette. */
+  colorize: number;
+  /** Input gain applied before painting, 0.25..2. */
+  energy: number;
+  /** Spectral resolution / complexity, 0..1. */
+  detail: number;
+  /** Visual animation rate, 0..2. */
+  motion: number;
+  /** Persistence of previous painted frames, 0..1. */
+  trails: number;
+};
+
+export const DEFAULT_AUDIO_VISUAL_SETTINGS: AudioVisualSettings = {
+  colorA: "#36e4ff",
+  colorB: "#ff4d9d",
+  colorize: 0,
+  energy: 1,
+  detail: 1,
+  motion: 1,
+  trails: 1,
+};
+
+export const AUDIO_MAP_PREVIEWS = ["hidden", "dim"] as const;
+export type AudioMapPreview = (typeof AUDIO_MAP_PREVIEWS)[number];
+export type AudioMapSettings = {
+  /** Strength of the texture-driven displacement, 0..1. */
+  amount: number;
+  /** Sampling radius used to soften the displacement field, 0..1. */
+  blur: number;
+  /** Whether the source texture is hidden or faintly composited above the result. */
+  preview: AudioMapPreview;
+};
+
+export const DEFAULT_AUDIO_MAP: AudioMapSettings = {
+  amount: 0.4,
+  blur: 0.15,
+  preview: "hidden",
+};
 
 export const BLEND_MODES = [
   "normal",
@@ -198,6 +241,10 @@ export type SceneLayer = {
   mediaKind: MediaKind;
   /** Visualizer style for audio-driven layers (audio files, mic line). */
   visual?: AudioVisualId;
+  /** Custom looks are retained independently when switching visualizers. */
+  visualSettings?: Partial<Record<AudioVisualId, AudioVisualSettings>>;
+  /** When present, the painted audio texture displaces layers below it. */
+  audioMap?: AudioMapSettings;
   /** Capture device for live layers; empty/absent means the default device. */
   deviceId?: string;
   generator?: GeneratorSettings;
@@ -437,6 +484,46 @@ function sanitizeMotion(input: Partial<MotionSettings> | null | undefined): Moti
   };
 }
 
+function sanitizeAudioMap(
+  input: Partial<AudioMapSettings> | null | undefined,
+): AudioMapSettings {
+  const value = input ?? {};
+  return {
+    amount: num(value.amount, DEFAULT_AUDIO_MAP.amount, 0, 1),
+    blur: num(value.blur, DEFAULT_AUDIO_MAP.blur, 0, 1),
+    preview: AUDIO_MAP_PREVIEWS.includes(value.preview as AudioMapPreview)
+      ? value.preview as AudioMapPreview
+      : DEFAULT_AUDIO_MAP.preview,
+  };
+}
+
+function sanitizeAudioVisualSettings(input: unknown): AudioVisualSettings {
+  const value = (input ?? {}) as Partial<AudioVisualSettings>;
+  const d = DEFAULT_AUDIO_VISUAL_SETTINGS;
+  return {
+    colorA: color(value.colorA, d.colorA),
+    colorB: color(value.colorB, d.colorB),
+    colorize: num(value.colorize, d.colorize, 0, 1),
+    energy: num(value.energy, d.energy, 0.25, 2),
+    detail: num(value.detail, d.detail, 0, 1),
+    motion: num(value.motion, d.motion, 0, 2),
+    trails: num(value.trails, d.trails, 0, 1),
+  };
+}
+
+function sanitizeAudioVisualSettingsMap(
+  input: unknown,
+): Partial<Record<AudioVisualId, AudioVisualSettings>> | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const source = input as Partial<Record<AudioVisualId, unknown>>;
+  const entries = AUDIO_VISUAL_IDS
+    .filter((id) => source[id] && typeof source[id] === "object")
+    .map((id) => [id, sanitizeAudioVisualSettings(source[id])] as const);
+  return entries.length
+    ? Object.fromEntries(entries) as Partial<Record<AudioVisualId, AudioVisualSettings>>
+    : undefined;
+}
+
 function sanitizeModulation(input: unknown, index: number): Modulation | null {
   if (!input || typeof input !== "object") return null;
   const value = input as Partial<Modulation>;
@@ -484,6 +571,7 @@ export function sanitizeScene(input: unknown): Scene {
           : MEDIA_KINDS.includes(l.mediaKind as MediaKind)
             ? (l.mediaKind as MediaKind)
             : "image";
+        const visualSettings = sanitizeAudioVisualSettingsMap(l.visualSettings);
         return {
           id: typeof l.id === "string" && l.id ? l.id.slice(0, 40) : `layer-${index}`,
           imageId: typeof l.imageId === "string" ? l.imageId.slice(0, 60) : "",
@@ -491,6 +579,12 @@ export function sanitizeScene(input: unknown): Scene {
           mediaKind,
           ...(AUDIO_VISUAL_IDS.includes(l.visual as AudioVisualId)
             ? { visual: l.visual as AudioVisualId }
+            : {}),
+          ...((mediaKind === "audio" || mediaKind === "mic") && visualSettings
+            ? { visualSettings }
+            : {}),
+          ...((mediaKind === "audio" || mediaKind === "mic") && l.audioMap
+            ? { audioMap: sanitizeAudioMap(l.audioMap) }
             : {}),
           ...(typeof l.deviceId === "string" && l.deviceId
             ? { deviceId: l.deviceId.slice(0, 120) }
