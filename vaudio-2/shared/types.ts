@@ -5,13 +5,98 @@ export const SCENE_DATA_LIMIT = 60_000;
 export const THUMB_LIMIT = 60_000;
 export const MAX_LAYERS = 12;
 
-export const MEDIA_KINDS = ["image", "video", "audio", "data", "camera", "mic"] as const;
+export const MEDIA_KINDS = [
+  "image", "video", "audio", "data", "camera", "mic", "generator",
+] as const;
 export type MediaKind = (typeof MEDIA_KINDS)[number];
 
 /** Live sources capture from the device instead of an IndexedDB blob. */
 export function isLiveKind(kind: MediaKind): kind is "camera" | "mic" {
   return kind === "camera" || kind === "mic";
 }
+
+export const GENERATOR_IDS = ["gradient", "noise", "grid", "stars", "orbits", "cells"] as const;
+export type GeneratorId = (typeof GENERATOR_IDS)[number];
+
+/** Camera looks: motion masks plus temporal history effects. */
+export const CAMERA_MODE_IDS = [
+  "difference",
+  "silhouette",
+  "edges",
+  "slit",
+  "echo",
+  "smear",
+  "freeze",
+] as const;
+export type CameraModeId = (typeof CAMERA_MODE_IDS)[number];
+/** @deprecated Use CameraModeId — kept as an alias for older call sites. */
+export type MotionVisualId = CameraModeId;
+export const MOTION_VISUAL_IDS = CAMERA_MODE_IDS;
+
+export type GeneratorSettings = {
+  kind: GeneratorId;
+  colorA: string;
+  colorB: string;
+  detail: number;
+  speed: number;
+};
+
+export type MotionSettings = {
+  mode: CameraModeId;
+  threshold: number;
+  gain: number;
+  decay: number;
+};
+
+export const DEFAULT_GENERATOR: GeneratorSettings = {
+  kind: "gradient",
+  colorA: "#12101a",
+  colorB: "#a87880",
+  detail: 0.5,
+  speed: 0.5,
+};
+
+export const DEFAULT_MOTION: MotionSettings = {
+  mode: "slit",
+  threshold: 0.4,
+  gain: 0.55,
+  decay: 0.55,
+};
+
+export const LAYER_MOD_PARAMS = [
+  "x", "y", "scale", "rotation", "opacity", "warp", "swirl", "ripple",
+  "kaleido", "pixelate", "bulge", "hue", "saturation", "contrast",
+  "brightness", "invert", "posterize", "chroma", "edges", "spin", "drift",
+  "pulse", "shimmer",
+] as const;
+export type LayerModParam = (typeof LAYER_MOD_PARAMS)[number];
+
+export const GLOBAL_MOD_PARAMS = [
+  "feedback", "trails", "fbZoom", "fbRotate", "fbHue", "warp", "swirl",
+  "ripple", "zoom", "kaleido", "mirror", "chroma", "hueOrbit", "saturation",
+  "contrast", "solarize", "grain", "scanlines", "vignette", "strobe",
+] as const;
+export type GlobalModParam = (typeof GLOBAL_MOD_PARAMS)[number];
+
+export type ModulationSourceKind = "audio" | "layer" | "midi" | "gamepad";
+export type Modulation = {
+  id: string;
+  sourceKind: ModulationSourceKind;
+  /** Layer id for layer signals; stable input key for MIDI/gamepad controls. */
+  sourceId?: string;
+  /** Human-readable controller label retained when hardware is disconnected. */
+  sourceLabel?: string;
+  signal: "level" | "luma" | "motion";
+  targetScope: "layer" | "global";
+  targetId?: string;
+  targetParam: LayerModParam | GlobalModParam;
+  /** Signed depth; 1 spans the target parameter's useful range. */
+  amount: number;
+  /** Center controller values around zero (useful for sticks and bipolar knobs). */
+  bipolar?: boolean;
+  /** 0 follows immediately, 1 is heavily smoothed. */
+  smoothing: number;
+};
 
 export const AUDIO_VISUAL_IDS = [
   "classic",
@@ -115,6 +200,9 @@ export type SceneLayer = {
   visual?: AudioVisualId;
   /** Capture device for live layers; empty/absent means the default device. */
   deviceId?: string;
+  generator?: GeneratorSettings;
+  /** Temporal camera look (slit-scan, echo grid, etc.); absent means live feed. */
+  motion?: MotionSettings;
   fx: LayerFx;
 };
 
@@ -165,6 +253,7 @@ export type Scene = {
   name: string;
   layers: SceneLayer[];
   global: GlobalFx;
+  modulations: Modulation[];
 };
 
 export type SceneMeta = {
@@ -324,6 +413,57 @@ export function sanitizeGlobalFx(input: Partial<GlobalFx> | null | undefined): G
   };
 }
 
+function sanitizeGenerator(input: Partial<GeneratorSettings> | null | undefined): GeneratorSettings {
+  const value = input ?? {};
+  return {
+    kind: GENERATOR_IDS.includes(value.kind as GeneratorId)
+      ? value.kind as GeneratorId : DEFAULT_GENERATOR.kind,
+    colorA: color(value.colorA, DEFAULT_GENERATOR.colorA),
+    colorB: color(value.colorB, DEFAULT_GENERATOR.colorB),
+    detail: num(value.detail, DEFAULT_GENERATOR.detail, 0, 1),
+    speed: num(value.speed, DEFAULT_GENERATOR.speed, 0, 1),
+  };
+}
+
+function sanitizeMotion(input: Partial<MotionSettings> | null | undefined): MotionSettings {
+  const value = input ?? {};
+  return {
+    mode: CAMERA_MODE_IDS.includes(value.mode as CameraModeId)
+      ? value.mode as CameraModeId
+      : DEFAULT_MOTION.mode,
+    threshold: num(value.threshold, DEFAULT_MOTION.threshold, 0, 1),
+    gain: num(value.gain, DEFAULT_MOTION.gain, 0, 1),
+    decay: num(value.decay, DEFAULT_MOTION.decay, 0, 1),
+  };
+}
+
+function sanitizeModulation(input: unknown, index: number): Modulation | null {
+  if (!input || typeof input !== "object") return null;
+  const value = input as Partial<Modulation>;
+  const sourceKinds: ModulationSourceKind[] = ["audio", "layer", "midi", "gamepad"];
+  const targetScope = value.targetScope === "global" ? "global" : "layer";
+  const validParam = targetScope === "global"
+    ? GLOBAL_MOD_PARAMS.includes(value.targetParam as GlobalModParam)
+    : LAYER_MOD_PARAMS.includes(value.targetParam as LayerModParam);
+  if (!sourceKinds.includes(value.sourceKind as ModulationSourceKind) || !validParam) return null;
+  return {
+    id: typeof value.id === "string" && value.id ? value.id.slice(0, 40) : `mod-${index}`,
+    sourceKind: value.sourceKind as ModulationSourceKind,
+    ...(typeof value.sourceId === "string" && value.sourceId
+      ? { sourceId: value.sourceId.slice(0, 180) } : {}),
+    ...(typeof value.sourceLabel === "string" && value.sourceLabel
+      ? { sourceLabel: value.sourceLabel.slice(0, 100) } : {}),
+    signal: value.signal === "luma" || value.signal === "motion" ? value.signal : "level",
+    targetScope,
+    ...(typeof value.targetId === "string" && value.targetId
+      ? { targetId: value.targetId.slice(0, 40) } : {}),
+    targetParam: value.targetParam as LayerModParam | GlobalModParam,
+    amount: num(value.amount, 0.5, -1, 1),
+    ...(value.bipolar === true ? { bipolar: true } : {}),
+    smoothing: num(value.smoothing, 0.25, 0, 1),
+  };
+}
+
 export function cleanName(value: string, fallback: string): string {
   const cleaned = value.replace(/\s+/g, " ").trim().slice(0, 80);
   return cleaned || fallback;
@@ -336,22 +476,37 @@ export function sanitizeScene(input: unknown): Scene {
     name: cleanName(typeof raw.name === "string" ? raw.name : "", "Untitled"),
     layers: layersRaw
       .filter((l): l is SceneLayer => !!l && typeof l === "object")
-      .map((l, index) => ({
-        id: typeof l.id === "string" && l.id ? l.id.slice(0, 40) : `layer-${index}`,
-        imageId: typeof l.imageId === "string" ? l.imageId.slice(0, 60) : "",
-        name: cleanName(typeof l.name === "string" ? l.name : "", "Layer"),
-        mediaKind: MEDIA_KINDS.includes(l.mediaKind as MediaKind)
-          ? (l.mediaKind as MediaKind)
-          : "image",
-        ...(AUDIO_VISUAL_IDS.includes(l.visual as AudioVisualId)
-          ? { visual: l.visual as AudioVisualId }
-          : {}),
-        ...(typeof l.deviceId === "string" && l.deviceId
-          ? { deviceId: l.deviceId.slice(0, 120) }
-          : {}),
-        fx: sanitizeLayerFx(l.fx),
-      })),
+      .map((l, index) => {
+        // Legacy scenes stored motion cameras as mediaKind "motion".
+        const wasMotion = (l as { mediaKind?: string }).mediaKind === "motion";
+        const mediaKind: MediaKind = wasMotion
+          ? "camera"
+          : MEDIA_KINDS.includes(l.mediaKind as MediaKind)
+            ? (l.mediaKind as MediaKind)
+            : "image";
+        return {
+          id: typeof l.id === "string" && l.id ? l.id.slice(0, 40) : `layer-${index}`,
+          imageId: typeof l.imageId === "string" ? l.imageId.slice(0, 60) : "",
+          name: cleanName(typeof l.name === "string" ? l.name : "", "Layer"),
+          mediaKind,
+          ...(AUDIO_VISUAL_IDS.includes(l.visual as AudioVisualId)
+            ? { visual: l.visual as AudioVisualId }
+            : {}),
+          ...(typeof l.deviceId === "string" && l.deviceId
+            ? { deviceId: l.deviceId.slice(0, 120) }
+            : {}),
+          ...(mediaKind === "generator" ? { generator: sanitizeGenerator(l.generator) } : {}),
+          ...(mediaKind === "camera" && (wasMotion || l.motion)
+            ? { motion: sanitizeMotion(l.motion) }
+            : {}),
+          fx: sanitizeLayerFx(l.fx),
+        };
+      }),
     global: sanitizeGlobalFx(raw.global),
+    modulations: (Array.isArray(raw.modulations) ? raw.modulations : [])
+      .slice(0, 64)
+      .map(sanitizeModulation)
+      .filter((value): value is Modulation => value !== null),
   };
 }
 

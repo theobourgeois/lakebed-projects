@@ -2,6 +2,7 @@ import { useAuth, useMutation, useQuery } from "lakebed/client";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import {
     DEFAULT_GLOBAL_FX,
+    DEFAULT_MOTION,
     MAX_LAYERS,
     POINTER_MODES,
     clamp,
@@ -9,8 +10,12 @@ import {
     decodeScene,
     encodeScene,
     type AudioVisualId,
+    type CameraModeId,
+    type GeneratorSettings,
     type GlobalFx,
     type LayerFx,
+    type Modulation,
+    type MotionSettings,
     type Scene,
     type SceneLayer,
     type SceneMeta,
@@ -22,6 +27,7 @@ import {
     type AppSettings,
 } from "./appSettings";
 import { LayerPanel } from "./components/LayerPanel";
+import { ModulationPanel } from "./components/ModulationPanel";
 import { LayersSidebar } from "./components/LayersSidebar";
 import { HelpModal } from "./components/HelpModal";
 import { SettingsModal } from "./components/SettingsModal";
@@ -40,6 +46,7 @@ import {
     type StageSize,
 } from "./frame";
 import { useMediaLibrary } from "./hooks/useMediaLibrary";
+import { useControlInputs } from "./hooks/useControlInputs";
 import { useMic } from "./hooks/useMic";
 import { usePlayMode } from "./hooks/usePlayMode";
 import { useRecorder } from "./hooks/useRecorder";
@@ -56,7 +63,7 @@ import { loadAutosave, newId, saveAutosave } from "./store";
 import { GLOBAL_CSS } from "./theme";
 
 function emptyScene(): Scene {
-    return { name: "Untitled", layers: [], global: { ...DEFAULT_GLOBAL_FX } };
+    return { name: "Untitled", layers: [], global: { ...DEFAULT_GLOBAL_FX }, modulations: [] };
 }
 
 export function App() {
@@ -132,6 +139,7 @@ export function App() {
         shift: boolean;
     } | null>(null);
     const lastTapAtRef = useRef(0);
+    const smoothedModulationsRef = useRef(new Map<string, number>());
 
     sceneRef.current = scene;
     stageModeRef.current = stageMode;
@@ -141,6 +149,7 @@ export function App() {
     settingsRef.current = settings;
 
     const { toast, showToast } = useToast();
+    const controls = useControlInputs(showToast);
 
     const media = useMediaLibrary({
         engineRef,
@@ -231,6 +240,69 @@ export function App() {
         }));
     }
 
+    function updateGenerator(layerId: string, patch: Partial<GeneratorSettings>) {
+        setScene((previous) => {
+            const source = previous.layers.find((item) => item.id === layerId);
+            return {
+                ...previous,
+                layers: previous.layers.map((layer) =>
+                    source && layer.imageId === source.imageId && layer.generator
+                        ? { ...layer, generator: { ...layer.generator, ...patch } }
+                        : layer,
+                ),
+            };
+        });
+    }
+
+    function updateMotion(layerId: string, patch: Partial<MotionSettings>) {
+        setScene((previous) => {
+            const source = previous.layers.find((item) => item.id === layerId);
+            if (!source || source.mediaKind !== "camera") return previous;
+            return {
+                ...previous,
+                layers: previous.layers.map((layer) =>
+                    layer.imageId === source.imageId
+                        ? {
+                              ...layer,
+                              motion: {
+                                  ...(layer.motion ?? DEFAULT_MOTION),
+                                  ...patch,
+                              },
+                          }
+                        : layer,
+                ),
+            };
+        });
+    }
+
+    function setCameraMode(layerId: string, mode: "live" | CameraModeId) {
+        const source = scene.layers.find((item) => item.id === layerId);
+        if (!source || source.mediaKind !== "camera") return;
+        const enabled = mode !== "live";
+        media.setCameraMotionMode(source.imageId, enabled);
+        setScene((previous) => ({
+            ...previous,
+            layers: previous.layers.map((layer) => {
+                if (layer.imageId !== source.imageId) return layer;
+                if (!enabled) {
+                    const { motion: _removed, ...rest } = layer;
+                    return rest;
+                }
+                return {
+                    ...layer,
+                    motion: {
+                        ...(layer.motion ?? DEFAULT_MOTION),
+                        mode,
+                    },
+                };
+            }),
+        }));
+    }
+
+    function updateModulations(modulations: Modulation[]) {
+        setScene((previous) => ({ ...previous, modulations }));
+    }
+
     function replaceLayerFx(layerId: string, fx: LayerFx) {
         setScene((previous) => ({
             ...previous,
@@ -274,6 +346,8 @@ export function App() {
                 mediaKind: source.mediaKind,
                 visual: source.visual,
                 deviceId: source.deviceId,
+                generator: source.generator ? { ...source.generator } : undefined,
+                motion: source.motion ? { ...source.motion } : undefined,
                 fx: {
                     ...source.fx,
                     x: source.fx.x + 0.06,
@@ -283,7 +357,10 @@ export function App() {
             const layers = previous.layers.slice();
             layers.splice(index + 1, 0, copy);
             setSelectedId(copy.id);
-            return { ...previous, layers };
+            return {
+                ...previous,
+                layers,
+            };
         });
     }
 
@@ -301,7 +378,13 @@ export function App() {
             ) {
                 media.forgetImage(removed.imageId);
             }
-            return { ...previous, layers };
+            return {
+                ...previous,
+                layers,
+                modulations: (previous.modulations ?? []).filter(
+                    (route) => route.targetId !== layerId && route.sourceId !== layerId,
+                ),
+            };
         });
         setSelectedId((current) => (current === layerId ? null : current));
     }
@@ -366,6 +449,9 @@ export function App() {
             audio: audioLevelRef.current,
             pointer: pointerRef.current,
             kick: playMode.kickRef.current,
+            signals: media.signalsRef.current,
+            controls: controls.valuesRef.current,
+            smoothedModulations: smoothedModulationsRef.current,
         });
         if (settingsRef.current.flashSafeMode) frame.global.strobe = 0;
         return frame;
@@ -443,6 +529,7 @@ export function App() {
                 engine,
                 timeRef.current,
             );
+            controls.pollGamepads();
             target = Math.max(target, mediaLevel);
             audioLevelRef.current += (target - audioLevelRef.current) * 0.28;
 
@@ -610,7 +697,8 @@ export function App() {
             }
             if (event.key === "Enter") {
                 event.preventDefault();
-                void recorder.toggleRecording();
+                if (event.shiftKey) recorder.exportPng();
+                else void recorder.toggleRecording();
                 return;
             }
             if (event.key === "Backspace" && event.shiftKey) {
@@ -1090,6 +1178,7 @@ export function App() {
                         onAddMic={(deviceId, label) =>
                             void media.addLiveLayer("mic", deviceId, label)
                         }
+                        onAddGenerator={media.addGeneratorLayer}
                     />
                 )}
 
@@ -1138,7 +1227,7 @@ export function App() {
                         <div class="pointer-events-none absolute inset-0 grid place-items-center">
                             <p class="border border-dashed border-[var(--line-hot)] bg-black/40 px-6 py-4 text-center font-mono text-[11px] leading-relaxed text-[var(--mute)]">
                                 Drop images, video, audio, or any file
-                                <br />— or add your camera / mic from the + menu
+                                <br />— or add live and generated sources from the + menu
                             </p>
                         </div>
                     )}
@@ -1183,6 +1272,29 @@ export function App() {
                                 onSetVisual={(visual) =>
                                     updateLayerVisual(selected.id, visual)
                                 }
+                                onSetGenerator={(patch) =>
+                                    updateGenerator(selected.id, patch)
+                                }
+                                onSetMotion={(patch) =>
+                                    updateMotion(selected.id, patch)
+                                }
+                                onSetCameraMode={(mode) =>
+                                    setCameraMode(selected.id, mode)
+                                }
+                            />
+                        )}
+                        {selected && (
+                            <ModulationPanel
+                                scope="layer"
+                                targetId={selected.id}
+                                layers={scene.layers}
+                                routes={scene.modulations ?? []}
+                                learning={controls.learning}
+                                midiInputs={controls.midiInputs}
+                                gamepads={controls.gamepads}
+                                onChange={updateModulations}
+                                onLearnMidi={(callback) => void controls.learnMidi(callback)}
+                                onLearnGamepad={controls.learnGamepad}
                             />
                         )}
                         <WorldPanel
@@ -1192,6 +1304,17 @@ export function App() {
                                 updateGlobal(preset.global);
                                 engineRef.current?.clearFeedback();
                             }}
+                        />
+                        <ModulationPanel
+                            scope="global"
+                            layers={scene.layers}
+                            routes={scene.modulations ?? []}
+                            learning={controls.learning}
+                            midiInputs={controls.midiInputs}
+                            gamepads={controls.gamepads}
+                            onChange={updateModulations}
+                            onLearnMidi={(callback) => void controls.learnMidi(callback)}
+                            onLearnGamepad={controls.learnGamepad}
                         />
                     </aside>
                 )}

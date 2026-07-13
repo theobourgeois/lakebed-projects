@@ -26,6 +26,11 @@ npx lakebed dev
 - **Play mode** (P): your cursor becomes a force field (vortex / gravity /
   prism / melt) that pushes the final image around.
 - **Audio**: mic and imported audio files both feed shader Audio React.
+- **Live sources**: camera motion can be extracted as difference, silhouette,
+  or edge textures. Procedural gradient, noise, grid, star, orbit, and cell
+  generators need no imported media.
+- **Modulation**: route audio, another layer's brightness/movement, learned
+  MIDI controls, or gamepads into individual layer and world parameters.
 - **Output**: export a PNG or record the canvas straight to video.
   Space freezes time; Tab hides the UI.
 

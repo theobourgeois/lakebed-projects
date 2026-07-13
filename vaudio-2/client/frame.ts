@@ -6,6 +6,7 @@ import {
     type PointerState,
 } from "./engine";
 import { blendIndex } from "./presets";
+import { resolveModulations, type SourceSignals } from "./modulation";
 
 /** Pure scene → render-state math shared by the engine loop and hit-testing. */
 
@@ -47,15 +48,25 @@ export function buildFrameState(args: {
     audio: number;
     pointer: PointerState;
     kick: KickState;
+    signals: SourceSignals;
+    controls: Map<string, number>;
+    smoothedModulations: Map<string, number>;
 }): FrameState {
     const { scene, info, time, audio, kick } = args;
     const { width, height } = args.stageSize;
     const aspect = Math.max(0.05, width / Math.max(1, height));
 
+    const modulation = resolveModulations(
+        scene,
+        args.signals,
+        args.controls,
+        audio,
+        args.smoothedModulations,
+    );
     const layers: LayerRenderState[] = scene.layers
         .filter((layer) => layer.fx.visible)
         .map((layer) => {
-            const fx = layer.fx;
+            const fx = modulation.layerFx.get(layer.id) ?? layer.fx;
             const seed = layerSeed(layer.id);
             const meta = info[layer.imageId];
             const imageAspect =
@@ -105,7 +116,7 @@ export function buildFrameState(args: {
             };
         });
 
-    const g = scene.global;
+    const g = modulation.global;
     return {
         time,
         audio,

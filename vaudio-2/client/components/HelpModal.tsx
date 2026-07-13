@@ -223,9 +223,11 @@ export function HelpModal(props: { onClose: () => void }) {
                         ["P", "play mode (from arrange)"],
                         ["space", "freeze time"],
                         ["enter", "start / stop recording"],
+                        ["⇧enter", "export PNG"],
                         ["tab", "hide UI"],
                         ["⌘Z / ⇧⌘Z", "undo / redo"],
                         ["field", "cursor mode under Cursor settings"],
+                        ["MIDI / pad", "learn controls in any Modulation section"],
                     ]}
                 />
             </div>

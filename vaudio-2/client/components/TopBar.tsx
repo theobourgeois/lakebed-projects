@@ -159,7 +159,7 @@ export function TopBar(props: {
                     )}
                 </Button>
                 <Button
-                    title={`Export PNG as ${EXPORT_QUALITIES.find((item) => item.id === props.exportQuality)?.label ?? "selected"} ${EXPORT_FORMATS.find((item) => item.id === props.exportFormat)?.label ?? "format"}`}
+                    title={`Export PNG as ${EXPORT_QUALITIES.find((item) => item.id === props.exportQuality)?.label ?? "selected"} ${EXPORT_FORMATS.find((item) => item.id === props.exportFormat)?.label ?? "format"} (⇧Enter)`}
                     onClick={props.onExportPng}
                 >
                     <IDownload />

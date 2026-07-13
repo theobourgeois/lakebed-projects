@@ -33,6 +33,8 @@ export function mediaKindLabel(kind: MediaKind): string {
       return "Camera";
     case "mic":
       return "Mic line";
+    case "generator":
+      return "Generator";
     default: {
       const _exhaustive: never = kind;
       return _exhaustive;

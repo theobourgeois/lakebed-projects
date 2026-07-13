@@ -1,6 +1,6 @@
 import type { ComponentChildren } from "preact";
 import { useRef, useState } from "preact/hooks";
-import { MAX_LAYERS, type SceneLayer } from "../../shared/types";
+import { MAX_LAYERS, type GeneratorId, type SceneLayer } from "../../shared/types";
 import type { ImageInfo } from "../frame";
 import {
     ICamera,
@@ -60,6 +60,8 @@ function mediaKindTag(kind: SceneLayer["mediaKind"]): string | null {
             return "cam";
         case "mic":
             return "mic";
+        case "generator":
+            return "gen";
         case "data":
             return "dat";
         default: {
@@ -82,6 +84,7 @@ export function LayersSidebar(props: {
     onImport: () => void;
     onAddCamera: (deviceId?: string, label?: string) => void;
     onAddMic: (deviceId?: string, label?: string) => void;
+    onAddGenerator: (kind?: GeneratorId) => void;
 }) {
     const [addOpen, setAddOpen] = useState(false);
     const [devicesFor, setDevicesFor] = useState<LiveKind | null>(null);
@@ -164,6 +167,12 @@ export function LayersSidebar(props: {
             icon: <IMic class="h-3.5 w-3.5" />,
             action: () => props.onAddMic(),
             liveKind: "mic",
+        },
+        {
+            label: "Generator",
+            hint: "animated procedural source",
+            icon: <IPlus class="h-3.5 w-3.5" />,
+            action: () => props.onAddGenerator("gradient"),
         },
     ];
     return (
@@ -255,10 +264,7 @@ export function LayersSidebar(props: {
                                                                 const kind =
                                                                     item.liveKind;
                                                                 closeAddMenu();
-                                                                if (
-                                                                    kind ===
-                                                                    "camera"
-                                                                )
+                                                                if (kind === "camera")
                                                                     props.onAddCamera(
                                                                         device.id,
                                                                         device.label,

@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import {
+    DEFAULT_GENERATOR,
     DEFAULT_LAYER_FX,
+    DEFAULT_MOTION,
     MAX_LAYERS,
     cleanName,
     isLiveKind,
     type AudioVisualId,
+    type GeneratorId,
+    type GeneratorSettings,
     type MediaKind,
     type Scene,
     type SceneLayer,
@@ -24,6 +28,9 @@ import {
     randomAudioVisual,
     withAmbientFloor,
 } from "../media";
+import { paintGenerator } from "../generators";
+import { paintMotion, type MotionBuffers } from "../motion";
+import type { SourceSignals } from "../modulation";
 import { decodeImageBlob, getImageBlob, newId, putImageBlob } from "../store";
 
 export type MediaRuntime = {
@@ -38,6 +45,10 @@ export type MediaRuntime = {
     /** Device capture backing camera / mic layers. */
     stream?: MediaStream;
     streamSourceNode?: MediaStreamAudioSourceNode;
+    motionBuffers?: MotionBuffers;
+    signalCanvas?: HTMLCanvasElement;
+    signalPixels?: Uint8ClampedArray;
+    frame?: number;
 };
 
 /**
@@ -58,6 +69,7 @@ export function useMediaLibrary(deps: {
     imageInfoRef.current = imageInfo;
 
     const mediaRuntimesRef = useRef(new Map<string, MediaRuntime>());
+    const signalsRef = useRef<SourceSignals>({});
     const audioContextRef = useRef<AudioContext | null>(null);
 
     useEffect(() => {
@@ -111,11 +123,27 @@ export function useMediaLibrary(deps: {
         // The IndexedDB blob is kept so undo can bring the layer back.
         disposeMediaRuntime(imageId);
         deps.engineRef.current?.removeImage(imageId);
+        delete signalsRef.current[imageId];
         setImageInfo((info) => {
             const next = { ...info };
             delete next[imageId];
             return next;
         });
+    }
+
+    function activateGenerator(imageId: string, settings: GeneratorSettings): ImageInfo {
+        disposeMediaRuntime(imageId);
+        const canvas = document.createElement("canvas");
+        paintGenerator(canvas, settings, 0);
+        deps.engineRef.current?.setImage(imageId, canvas);
+        mediaRuntimesRef.current.set(imageId, { kind: "generator", canvas });
+        return {
+            width: canvas.width,
+            height: canvas.height,
+            thumb: canvasThumb(canvas, canvas.width, canvas.height),
+            missing: false,
+            kind: "generator",
+        };
     }
 
     async function ensureMediaAudioContext(): Promise<AudioContext> {
@@ -126,6 +154,22 @@ export function useMediaLibrary(deps: {
             await audioContextRef.current.resume();
         }
         return audioContextRef.current;
+    }
+
+    function rememberStaticSignal(imageId: string, source: CanvasImageSource) {
+        const canvas = document.createElement("canvas");
+        canvas.width = 24;
+        canvas.height = 14;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        if (!context) return;
+        context.drawImage(source, 0, 0, canvas.width, canvas.height);
+        const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        let luma = 0;
+        for (let p = 0; p < pixels.length; p += 4) {
+            luma += pixels[p] * 0.299 + pixels[p + 1] * 0.587 + pixels[p + 2] * 0.114;
+        }
+        luma /= (pixels.length / 4) * 255;
+        signalsRef.current[imageId] = { level: luma, luma, motion: 0 };
     }
 
     async function activateMedia(
@@ -139,6 +183,7 @@ export function useMediaLibrary(deps: {
         if (kind === "image") {
             const decoded = await decodeImageBlob(blob);
             engine?.setImage(imageId, decoded.canvas);
+            rememberStaticSignal(imageId, decoded.canvas);
             mediaRuntimesRef.current.set(imageId, { kind });
             return {
                 width: decoded.width,
@@ -154,6 +199,7 @@ export function useMediaLibrary(deps: {
             const buffer = await blob.slice(0, 1024 * 1024).arrayBuffer();
             paintDataBytes(canvas, new Uint8Array(buffer));
             engine?.setImage(imageId, canvas);
+            rememberStaticSignal(imageId, canvas);
             mediaRuntimesRef.current.set(imageId, { kind, canvas });
             return {
                 width: canvas.width,
@@ -254,6 +300,7 @@ export function useMediaLibrary(deps: {
         kind: "camera" | "mic",
         stream: MediaStream,
         visual?: AudioVisualId,
+        motionMode = false,
     ): Promise<ImageInfo> {
         disposeMediaRuntime(imageId);
         const engine = deps.engineRef.current;
@@ -284,10 +331,26 @@ export function useMediaLibrary(deps: {
             });
             await video.play().catch(() => undefined);
 
-            const width = Math.max(1, video.videoWidth);
-            const height = Math.max(1, video.videoHeight);
-            engine?.setImage(imageId, video);
-            mediaRuntimesRef.current.set(imageId, { kind, video, stream });
+            const canvas = motionMode ? document.createElement("canvas") : undefined;
+            const width = motionMode ? 320 : Math.max(1, video.videoWidth);
+            const height = motionMode ? 180 : Math.max(1, video.videoHeight);
+            engine?.setImage(imageId, canvas ?? video);
+            mediaRuntimesRef.current.set(imageId, {
+                kind,
+                video,
+                stream,
+                canvas,
+                ...(motionMode
+                    ? {
+                          motionBuffers: {
+                              sample: document.createElement("canvas"),
+                              history: [],
+                              write: 0,
+                              count: 0,
+                          },
+                      }
+                    : {}),
+            });
             return {
                 width,
                 height,
@@ -345,7 +408,59 @@ export function useMediaLibrary(deps: {
         );
     }
 
-    /** Add a live camera / mic-line layer backed by device capture. */
+    /** Switch a live camera between raw feed and motion extraction without restarting capture. */
+    function setCameraMotionMode(imageId: string, enabled: boolean) {
+        const runtime = mediaRuntimesRef.current.get(imageId);
+        const engine = deps.engineRef.current;
+        if (!runtime || runtime.kind !== "camera" || !runtime.video || !engine) return;
+
+        if (enabled) {
+            const canvas = runtime.canvas ?? document.createElement("canvas");
+            runtime.canvas = canvas;
+            runtime.motionBuffers = runtime.motionBuffers ?? {
+                sample: document.createElement("canvas"),
+                history: [],
+                write: 0,
+                count: 0,
+            };
+            engine.setImage(imageId, canvas);
+            setImageInfo((previous) => ({
+                ...previous,
+                [imageId]: {
+                    ...(previous[imageId] ?? {
+                        thumb: "",
+                        missing: false,
+                        kind: "camera",
+                    }),
+                    width: 320,
+                    height: 180,
+                    kind: "camera",
+                },
+            }));
+            return;
+        }
+
+        runtime.canvas = undefined;
+        runtime.motionBuffers = undefined;
+        const width = Math.max(1, runtime.video.videoWidth);
+        const height = Math.max(1, runtime.video.videoHeight);
+        engine.setImage(imageId, runtime.video);
+        setImageInfo((previous) => ({
+            ...previous,
+            [imageId]: {
+                ...(previous[imageId] ?? {
+                    thumb: "",
+                    missing: false,
+                    kind: "camera",
+                }),
+                width,
+                height,
+                kind: "camera",
+            },
+        }));
+    }
+
+    /** Add a live camera or mic-line layer. */
     async function addLiveLayer(
         kind: "camera" | "mic",
         deviceId?: string,
@@ -360,9 +475,7 @@ export function useMediaLibrary(deps: {
             stream = await requestLiveStream(kind, deviceId);
         } catch {
             deps.showToast(
-                kind === "camera"
-                    ? "Camera was blocked"
-                    : "Microphone was blocked",
+                kind === "camera" ? "Camera was blocked" : "Microphone was blocked",
             );
             return;
         }
@@ -402,6 +515,27 @@ export function useMediaLibrary(deps: {
                     : "Could not start the mic",
             );
         }
+    }
+
+    function addGeneratorLayer(kind: GeneratorId = "gradient") {
+        if (deps.sceneRef.current.layers.length >= MAX_LAYERS) {
+            deps.showToast(`Layer limit is ${MAX_LAYERS}`);
+            return;
+        }
+        const imageId = newId("gen");
+        const generator = { ...DEFAULT_GENERATOR, kind };
+        const info = activateGenerator(imageId, generator);
+        setImageInfo((previous) => ({ ...previous, [imageId]: info }));
+        const layer: SceneLayer = {
+            id: newId("layer"),
+            imageId,
+            name: `${kind[0].toUpperCase()}${kind.slice(1)}`,
+            mediaKind: "generator",
+            generator,
+            fx: { ...DEFAULT_LAYER_FX },
+        };
+        deps.setScene((previous) => ({ ...previous, layers: [...previous.layers, layer] }));
+        deps.setSelectedId(layer.id);
     }
 
     async function importFiles(files: Iterable<File>) {
@@ -460,6 +594,8 @@ export function useMediaLibrary(deps: {
         const nameById = new Map<string, string>();
         const visualById = new Map<string, AudioVisualId | undefined>();
         const deviceById = new Map<string, string | undefined>();
+        const generatorById = new Map<string, GeneratorSettings | undefined>();
+        const motionById = new Map<string, boolean>();
         for (const layer of target.layers) {
             if (!layer.imageId) continue;
             if (!kindById.has(layer.imageId)) {
@@ -467,6 +603,8 @@ export function useMediaLibrary(deps: {
                 nameById.set(layer.imageId, layer.name);
                 visualById.set(layer.imageId, layer.visual);
                 deviceById.set(layer.imageId, layer.deviceId);
+                generatorById.set(layer.imageId, layer.generator);
+                motionById.set(layer.imageId, !!layer.motion);
             }
         }
 
@@ -485,6 +623,14 @@ export function useMediaLibrary(deps: {
                 continue;
             }
             try {
+                if (kind === "generator") {
+                    const info = activateGenerator(
+                        imageId,
+                        generatorById.get(imageId) ?? DEFAULT_GENERATOR,
+                    );
+                    setImageInfo((previous) => ({ ...previous, [imageId]: info }));
+                    continue;
+                }
                 if (isLiveKind(kind)) {
                     // Live sources have no blob — reconnect to the device,
                     // falling back to the default if the saved one is gone.
@@ -502,6 +648,7 @@ export function useMediaLibrary(deps: {
                         kind,
                         stream,
                         visualById.get(imageId),
+                        kind === "camera" && !!motionById.get(imageId),
                     );
                     setImageInfo((previous) => ({
                         ...previous,
@@ -538,18 +685,48 @@ export function useMediaLibrary(deps: {
     /** Push fresh video frames / audio spectra to the engine; returns peak level. */
     function syncLiveMediaTextures(engine: EngineHandle, time: number): number {
         let mediaLevel = 0;
-        let visualById: Map<string, AudioVisualId | undefined> | null = null;
-        const visualFor = (imageId: string): AudioVisualId | undefined => {
-            if (!visualById) {
-                visualById = new Map();
+        let layerByImage: Map<string, SceneLayer> | null = null;
+        const layerFor = (imageId: string): SceneLayer | undefined => {
+            if (!layerByImage) {
+                layerByImage = new Map();
                 for (const layer of deps.sceneRef.current.layers) {
-                    if (!visualById.has(layer.imageId))
-                        visualById.set(layer.imageId, layer.visual);
+                    if (!layerByImage.has(layer.imageId)) layerByImage.set(layer.imageId, layer);
                 }
             }
-            return visualById.get(imageId);
+            return layerByImage.get(imageId);
+        };
+        const visualFor = (imageId: string): AudioVisualId | undefined => {
+            return layerFor(imageId)?.visual;
         };
         for (const [imageId, runtime] of mediaRuntimesRef.current) {
+            if (runtime.kind === "generator" && runtime.canvas) {
+                const luma = paintGenerator(
+                    runtime.canvas,
+                    layerFor(imageId)?.generator ?? DEFAULT_GENERATOR,
+                    time,
+                );
+                signalsRef.current[imageId] = { level: luma, luma, motion: 0 };
+                engine.setImage(imageId, runtime.canvas);
+                continue;
+            }
+            if (
+                runtime.kind === "camera" &&
+                runtime.video &&
+                runtime.canvas &&
+                runtime.motionBuffers &&
+                layerFor(imageId)?.motion &&
+                runtime.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+            ) {
+                const metrics = paintMotion(
+                    runtime.canvas,
+                    runtime.video,
+                    runtime.motionBuffers,
+                    layerFor(imageId)?.motion ?? DEFAULT_MOTION,
+                );
+                signalsRef.current[imageId] = { level: metrics.motion, ...metrics };
+                engine.setImage(imageId, runtime.canvas);
+                continue;
+            }
             if (
                 (runtime.kind === "video" || runtime.kind === "camera") &&
                 runtime.video
@@ -559,6 +736,32 @@ export function useMediaLibrary(deps: {
                     HTMLMediaElement.HAVE_CURRENT_DATA
                 ) {
                     engine.setImage(imageId, runtime.video);
+                    runtime.frame = (runtime.frame ?? 0) + 1;
+                    if (runtime.frame % 5 === 0) {
+                        const canvas = runtime.signalCanvas ?? document.createElement("canvas");
+                        runtime.signalCanvas = canvas;
+                        canvas.width = 24;
+                        canvas.height = 14;
+                        const context = canvas.getContext("2d", { willReadFrequently: true });
+                        if (context) {
+                            context.drawImage(runtime.video, 0, 0, canvas.width, canvas.height);
+                            const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+                            let luma = 0;
+                            let motion = 0;
+                            for (let p = 0; p < pixels.length; p += 4) {
+                                luma += pixels[p] * 0.299 + pixels[p + 1] * 0.587 + pixels[p + 2] * 0.114;
+                                if (runtime.signalPixels) {
+                                    motion += (Math.abs(pixels[p] - runtime.signalPixels[p]) +
+                                        Math.abs(pixels[p + 1] - runtime.signalPixels[p + 1]) +
+                                        Math.abs(pixels[p + 2] - runtime.signalPixels[p + 2])) / 3;
+                                }
+                            }
+                            const count = pixels.length / 4;
+                            const metrics = { luma: luma / count / 255, motion: motion / count / 255 };
+                            signalsRef.current[imageId] = { level: metrics.motion, ...metrics };
+                            runtime.signalPixels = new Uint8ClampedArray(pixels);
+                        }
+                    }
                 }
                 continue;
             }
@@ -577,6 +780,7 @@ export function useMediaLibrary(deps: {
                 runtime.analyser.getByteFrequencyData(spectrum);
                 let level = levelFromSpectrum(spectrum);
                 mediaLevel = Math.max(mediaLevel, level);
+                signalsRef.current[imageId] = { level, luma: level, motion: level };
                 let bins: Uint8Array = spectrum;
                 if (runtime.kind === "mic") {
                     // Keep the mic line alive through silence.
@@ -600,9 +804,12 @@ export function useMediaLibrary(deps: {
     return {
         imageInfo,
         imageInfoRef,
+        signalsRef,
         audioContextRef,
         importFiles,
         addLiveLayer,
+        addGeneratorLayer,
+        setCameraMotionMode,
         hydrateSceneImages,
         syncLiveMediaTextures,
         disposeAllMediaRuntimes,

@@ -2,20 +2,24 @@ import { useEffect, useRef } from "preact/hooks";
 import {
     AUDIO_VISUAL_IDS,
     BLEND_MODES,
+    DEFAULT_MOTION,
+    GENERATOR_IDS,
     TILE_MODES,
     type AudioVisualId,
     type BlendMode,
+    type CameraModeId,
+    type GeneratorId,
+    type GeneratorSettings,
     type LayerFx,
+    type MotionSettings,
     type SceneLayer,
 } from "../../shared/types";
 import type { ImageInfo } from "../frame";
 import { IDice } from "../icons";
 import {
     AUDIO_VISUAL_LABELS,
-    mediaKindLabel,
     randomAudioVisual,
 } from "../media";
-import { randomLayerFx, resetLayerFxEffects } from "../presets";
 import {
     IconButton,
     Section,
@@ -35,6 +39,48 @@ const VISUAL_OPTIONS = AUDIO_VISUAL_IDS.map((id) => ({
     value: id,
     label: AUDIO_VISUAL_LABELS[id],
 }));
+const GENERATOR_OPTIONS = GENERATOR_IDS.map((id) => ({
+    value: id,
+    label: id[0].toUpperCase() + id.slice(1),
+}));
+
+type CameraModeOption = "live" | CameraModeId;
+
+const CAMERA_MODE_OPTIONS: { value: CameraModeOption; label: string }[] = [
+    { value: "live", label: "Live" },
+    { value: "difference", label: "Motion" },
+    { value: "silhouette", label: "Silhouette" },
+    { value: "edges", label: "Edges" },
+    { value: "slit", label: "Time ribbons" },
+    { value: "echo", label: "Echo wall" },
+    { value: "smear", label: "Spectral trails" },
+    { value: "freeze", label: "Shatter hold" },
+];
+
+function cameraSliderLabels(mode: CameraModeId): {
+    threshold: string;
+    gain: string;
+    decay: string;
+} {
+    switch (mode) {
+        case "difference":
+        case "silhouette":
+        case "edges":
+            return { threshold: "Threshold", gain: "Gain", decay: "Trail decay" };
+        case "slit":
+            return { threshold: "Ribbon bend", gain: "Time stretch", decay: "History" };
+        case "echo":
+            return { threshold: "Wall size", gain: "Echo depth", decay: "History" };
+        case "smear":
+            return { threshold: "Sensitivity", gain: "Trail spread", decay: "History" };
+        case "freeze":
+            return { threshold: "Trigger", gain: "Shard size", decay: "Hold time" };
+        default: {
+            const _exhaustive: never = mode;
+            return _exhaustive;
+        }
+    }
+}
 
 /** Right-panel sections for the selected layer's FX. */
 export function LayerPanel(props: {
@@ -43,11 +89,18 @@ export function LayerPanel(props: {
     onPatch: (patch: Partial<LayerFx>) => void;
     onReplaceFx: (fx: LayerFx) => void;
     onSetVisual: (visual: AudioVisualId) => void;
+    onSetGenerator: (patch: Partial<GeneratorSettings>) => void;
+    onSetMotion: (patch: Partial<MotionSettings>) => void;
+    onSetCameraMode: (mode: CameraModeOption) => void;
 }) {
-    const { layer, info } = props;
+    const { layer } = props;
     const fx = layer.fx;
     const audioDriven =
         layer.mediaKind === "mic" || layer.mediaKind === "audio";
+    const motionSettings = layer.motion ?? DEFAULT_MOTION;
+    const cameraMode: CameraModeOption = layer.motion?.mode ?? "live";
+    const sliderLabels =
+        cameraMode === "live" ? null : cameraSliderLabels(cameraMode);
     const blendCommitRef = useRef(fx.blend);
     const blendPreviewingRef = useRef(false);
     useEffect(() => {
@@ -58,6 +111,59 @@ export function LayerPanel(props: {
     return (
         <>
             <Section accent actions={undefined}>
+                {layer.mediaKind === "generator" && layer.generator && (
+                    <div class="border-b border-[var(--line)] px-3 py-2">
+                        <div class="mb-1 text-[9px] uppercase tracking-[0.14em] text-[var(--mute)]">Generator</div>
+                        <Select<GeneratorId>
+                            value={layer.generator.kind}
+                            options={GENERATOR_OPTIONS}
+                            onChange={(kind) => props.onSetGenerator({ kind })}
+                        />
+                        <div class="mt-2 flex items-center gap-2">
+                            <input type="color" value={layer.generator.colorA} onInput={(event) => props.onSetGenerator({ colorA: event.currentTarget.value })} />
+                            <input type="color" value={layer.generator.colorB} onInput={(event) => props.onSetGenerator({ colorB: event.currentTarget.value })} />
+                            <span class="font-mono text-[8px] uppercase text-[var(--mute)]">palette</span>
+                        </div>
+                        <Slider label="Detail" value={layer.generator.detail} def={0.5} onChange={(detail) => props.onSetGenerator({ detail })} />
+                        <Slider label="Source speed" value={layer.generator.speed} def={0.5} onChange={(speed) => props.onSetGenerator({ speed })} />
+                    </div>
+                )}
+                {layer.mediaKind === "camera" && (
+                    <div class="border-b border-[var(--line)] px-3 py-2">
+                        <div class="mb-1 text-[9px] uppercase tracking-[0.14em] text-[var(--mute)]">
+                            Mode
+                        </div>
+                        <Select<CameraModeOption>
+                            value={cameraMode}
+                            options={CAMERA_MODE_OPTIONS}
+                            onChange={(mode) => props.onSetCameraMode(mode)}
+                        />
+                        {layer.motion && sliderLabels && (
+                            <div class="mt-1">
+                                <Slider
+                                    label={sliderLabels.decay}
+                                    value={motionSettings.decay}
+                                    def={DEFAULT_MOTION.decay}
+                                    onChange={(decay) => props.onSetMotion({ decay })}
+                                />
+                                <Slider
+                                    label={sliderLabels.gain}
+                                    value={motionSettings.gain}
+                                    def={DEFAULT_MOTION.gain}
+                                    onChange={(gain) => props.onSetMotion({ gain })}
+                                />
+                                <Slider
+                                    label={sliderLabels.threshold}
+                                    value={motionSettings.threshold}
+                                    def={DEFAULT_MOTION.threshold}
+                                    onChange={(threshold) =>
+                                        props.onSetMotion({ threshold })
+                                    }
+                                />
+                            </div>
+                        )}
+                    </div>
+                )}
                 {audioDriven && (
                     <div class="px-3 py-[5px]">
                         <div class="mb-1 flex items-center text-[9px] uppercase tracking-[0.14em] text-[var(--mute)]">
